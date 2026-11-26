@@ -1,0 +1,25 @@
+Dewaguard Titan
+Copyright (C) 2026
+
+This program is free software: you can redistribute it and/or modify it under the
+terms of the GNU Affero General Public License, version 3, as published by the Free
+Software Foundation. See LICENSE.
+
+Third-party content
+-------------------
+skills/  — copied verbatim from BaaRai/ARTEX (https://github.com/BaaRai/ARTEX), a
+           community continuation of Autumn-27/ARTEX, licensed AGPL-3.0.
+           The skills folder retains its original content and attribution. Where a
+           skill bundles third-party artifacts (e.g. skills/php2shell references
+           scripts/poc/php2shell from ikow/php2shell-poc, MIT), those licenses apply
+           to those files.
+
+Design provenance
+-----------------
+The dual-graph model, the planner/worker/guard split, and several prompt rules are
+adapted from ARTEX (AGPL-3.0). The implementation in titan/ is an independent Python
+rewrite with a different persistence layer, guard, and runtime; no Go source is
+compiled or vendored here.
+
+Titan is a testing tool. It is intended only for systems for which the operator holds
+written authorization. The authors accept no liability for unauthorized use.
