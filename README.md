@@ -109,41 +109,37 @@ Dropped on purpose (this is the "lightweight" part):
   automation server, intercept UI, digests/cold-node folding
 - Redis-less horizontal scale (one process, N threads; SQLite is the blackboard)
 
-## The GUI
-
-`titan serve` opens a local console at http://127.0.0.1:9911 — single page, no JS
-framework, no build step, no external assets:
-
-- task list; **+ task** form (goal + `kind=value` scope lines)
-- **run** / **stop** (rounds, workers), live polling every 2 s
-- tabs: overview, intents (with per-intent **steer** / **kill**), facts, findings
-  with evidence and PoC, assets, activity trail, raw graph JSON
-- **queue hint** box → lands as a hint node the planner reads next round
-- **export .md** downloads the engagement report
-
-It is an operator UI for one person on one box, not a multi-user service: binding
-off `127.0.0.1` is refused unless `TITAN_CONSOLE_TOKEN` is set, and then every
-request must carry `X-Titan-Token`.
-
 ## Install (no Docker, no server, no pip packages)
+
+Requirements: Linux or macOS, Python >= 3.10, git. Nothing else: no Docker, no
+database server, no pip packages. All state is one SQLite file.
 
 ```bash
 cd ~/Dewaguard/Titan
 ./install.sh
 ```
 
-That checks Python ≥ 3.10, links `~/.local/bin/titan`, creates `~/.titan/`, seeds
-the skill index and runs `titan doctor`.
+The installer
 
-Manual equivalent:
+1. refuses Python < 3.10,
+2. links the launcher to `~/.local/bin/titan` (and tells you if that directory is
+   not on `PATH`),
+3. creates `~/.titan/` — database, run directories, skill index,
+4. runs `titan doctor` and prints the next steps.
+
+Manual equivalent, if you prefer to see every step:
 
 ```bash
 chmod +x bin/titan
 ln -sf "$PWD/bin/titan" ~/.local/bin/titan
-./bin/titan init
+export PATH="$HOME/.local/bin:$PATH"      # if not already on PATH
+titan init
 ```
 
-Optional editable install (only if you want `import titan` elsewhere):
+`titan init` is idempotent: it creates `~/.titan/titan.db`, the `runs/` tree and
+indexes `skills/` (11 skills). No network, no service, no root.
+
+Optional editable install, only if something else needs `import titan`:
 
 ```bash
 python3 -m pip install --user -e .
@@ -151,19 +147,66 @@ python3 -m pip install --user -e .
 
 ## Configure a model
 
-Any OpenAI-compatible `/chat/completions` endpoint: Ollama, vLLM, LM Studio,
-llama.cpp server, DeepSeek, OpenRouter, an internal gateway.
+Titan is model-agnostic: any endpoint that speaks OpenAI `/chat/completions` with
+function calling.
 
 ```bash
-export TITAN_LLM_BASE_URL=http://127.0.0.1:11434/v1
-export TITAN_LLM_MODEL=qwen2.5:14b
-# or
-export TITAN_LLM_BASE_URL=https://api.deepseek.com/v1
-export TITAN_LLM_MODEL=deepseek-chat
-export TITAN_LLM_API_KEY=...
+cp env.example ~/.titan/env     # edit, then source it (here or from your shell rc)
+source ~/.titan/env
 ```
 
-Put these in `~/.titan/env` and `source` it, or export them in your shell rc.
+Minimal contents:
+
+```bash
+export TITAN_LLM_BASE_URL=http://127.0.0.1:11434/v1    # Ollama
+export TITAN_LLM_MODEL=qwen2.5:14b
+
+# or a hosted API:
+# export TITAN_LLM_BASE_URL=https://api.deepseek.com/v1
+# export TITAN_LLM_MODEL=deepseek-chat
+# export TITAN_LLM_API_KEY=...
+```
+
+Verify before spending tokens:
+
+```bash
+titan doctor
+```
+
+It checks the state dirs, the skill index, the endpoint and the key, and prints
+`status ready` (or exactly what is missing). A run with a dead endpoint now stops
+with a message instead of a traceback.
+
+## First run
+
+```bash
+# 1. authorize a target -- without --scope every targeted command is refused
+titan new "Enumerate http://127.0.0.1:8080 and record what it exposes; no exploitation" \
+  --title "local lab" --scope url=http://127.0.0.1:8080
+
+# 2. run it (2 rounds keeps the first run cheap)
+titan run 1 --rounds 2 --workers 1
+
+# 3. read the result
+titan status 1
+titan findings 1
+```
+
+The model decomposes the goal into 1-6 measurable goals, the planner dispatches
+intents, each worker runs real commands in `~/.titan/runs/tasks/1/` and writes facts,
+assets and findings back into the graph. Ctrl-C is safe: open intents stay claimable,
+so `titan run 1` resumes where it stopped.
+
+## GUI
+
+```bash
+titan serve            # http://127.0.0.1:9911
+```
+
+Same process, no build step, no JavaScript dependencies. Create tasks, start/stop
+runs, steer or kill intents, queue hints, read findings, download the report. It is
+loopback-only: binding it elsewhere requires `TITAN_CONSOLE_TOKEN`, and then every
+request must carry `X-Titan-Token`.
 
 ### All settings
 
@@ -187,7 +230,7 @@ Put these in `~/.titan/env` and `source` it, or export them in your shell rc.
 | `TITAN_RPS` | `2.0` | per-host request rate |
 | `TITAN_MAX_PER_HOST` | `1` | in-flight per host |
 | `TITAN_NOISE_PROFILE` | `balanced` | `quiet` \| `balanced` \| `aggressive` \| `off` |
-| `TITAN_USER_AGENT` | `Titan-Assessment/0.2.0` | outbound UA |
+| `TITAN_USER_AGENT` | `Titan-Assessment/0.3.0` | outbound UA |
 | `TITAN_CONSOLE_PORT` | `9911` | web GUI port |
 | `TITAN_CONSOLE_BIND` | `127.0.0.1` | GUI bind address |
 | `TITAN_CONSOLE_TOKEN` | *(empty)* | required header `X-Titan-Token` when bound off-localhost |
