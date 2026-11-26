@@ -9,6 +9,8 @@ Edge rels : spawns | derived_from | yields | proves | covers
 """
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
 import json
 import sqlite3
 import threading
@@ -247,6 +249,31 @@ NODE_STATES = {
 
 def now() -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+
+def parse_utc(iso: str | None):
+    if not iso:
+        return None
+    try:
+        return datetime.strptime(iso, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+    except (ValueError, TypeError):
+        return None
+
+
+def local_hms(iso: str | None, with_date: bool = False) -> str:
+    """Render a stored UTC timestamp in this machine's local time."""
+    dt = parse_utc(iso)
+    if not dt:
+        return ""
+    loc = dt.astimezone()
+    return loc.strftime("%Y-%m-%d %H:%M:%S" if with_date else "%H:%M:%S")
+
+
+def seconds_between(a: str | None, b: str | None) -> int | None:
+    da, db = parse_utc(a), parse_utc(b)
+    if not da or not db:
+        return None
+    return max(0, int((db - da).total_seconds()))
 
 
 def jloads(s: str | None, default: Any) -> Any:
@@ -517,10 +544,16 @@ class Store:
 
     def _node_view(self, r: sqlite3.Row) -> dict:
         p = jloads(r["payload"], {})
+        created, completed = r["created_at"], r["completed_at"]
+        took = seconds_between(created, completed) if completed else \
+            seconds_between(created, now())
         return {"id": r["id"], "kind": r["kind"], "state": r["state"],
                 "summary": p.get("summary") or p.get("text") or p.get("goal") or "",
                 "asset_ids": self.anchors(r["id"]), "priority": r["priority"],
-                "completed_at": r["completed_at"], "blocked_reason": r["blocked_reason"]}
+                "created_at": created, "started": local_hms(created),
+                "completed_at": completed, "finished": local_hms(completed),
+                "took_s": took, "running": completed is None and r["state"] == "running",
+                "blocked_reason": r["blocked_reason"]}
 
     # ---------------------------------------------------------------- goals
     def goals(self, task_id: int) -> list[dict]:
@@ -584,6 +617,7 @@ class Store:
         for r in self.q(sql, (task_id,)):
             d = dict(r)
             d["traffic_refs"] = jloads(d.get("traffic_refs"), [])
+            d["at_local"] = local_hms(d.get("created_at"))
             out.append(d)
         return out
 
@@ -601,7 +635,8 @@ class Store:
             p = jloads(r["payload"], {})
             out.append({"id": r["id"], "summary": p.get("summary", ""), "source": p.get("source"),
                         "confidence": p.get("confidence"), "from_intent": p.get("from_intent") or r["origin"],
-                        "created_at": r["created_at"]})
+                        "created_at": r["created_at"],
+                        "at_local": local_hms(r["created_at"])})
         return out
 
     # ---------------------------------------------------------------- assets
@@ -752,8 +787,20 @@ class Store:
                        json.dumps(metadata or {}), tokens_in, tokens_out, now()))
 
     def activity(self, task_id: int, limit: int = 50) -> list[dict]:
-        return [dict(r) for r in self.q(
-            "SELECT * FROM activity WHERE task_id=? ORDER BY id DESC LIMIT ?", (task_id, limit))]
+        """Oldest -> newest, each row carrying local wall-clock time and the seconds
+        since the previous row (so a trace reads like a timeline)."""
+        rows = list(reversed(self.q(
+            "SELECT * FROM activity WHERE task_id=? ORDER BY id DESC LIMIT ?", (task_id, limit))))
+        out, prev = [], None
+        for r in rows:
+            d = dict(r)
+            d["at"] = d["created_at"]
+            d["at_local"] = local_hms(d["created_at"])
+            d["date_local"] = local_hms(d["created_at"], with_date=True)
+            d["delta_s"] = seconds_between(prev, d["created_at"]) if prev else None
+            prev = d["created_at"]
+            out.append(d)
+        return out
 
     def audit(self, task_id: int, worker: str, tool: str, action: str, reason: str = "",
               command: str = "") -> None:
@@ -834,6 +881,119 @@ class Store:
     def close(self) -> None:
         with self.lock:
             self.db.close()
+
+    # ---------------------------------------------------------------- enumeration view
+    def enumeration(self, task_id: int) -> dict:
+        """Human-readable enumeration record: hosts -> services -> endpoints, with the
+        observations (facts) attached to each host, newest last."""
+        from urllib.parse import urlparse
+
+        def host_of(url: str) -> str:
+            try:
+                return (urlparse(url).hostname or "").lower()
+            except ValueError:
+                return ""
+
+        assets = self.assets(task_id, limit=1000)
+        facts = [dict(r) for r in self.q(
+            "SELECT * FROM exploration_nodes WHERE exploration_id=? AND kind='fact'"
+            " AND state<>'dismissed' ORDER BY id", (task_id,))]
+        fact_anchor = {}
+        for f in facts:
+            ids = self.anchors(f["id"])
+            fact_anchor[f["id"]] = ids
+
+        hosts: dict[str, dict] = {}
+
+        def host(key: str) -> dict:
+            key = key or "(unattached)"
+            return hosts.setdefault(key, {"key": key, "ip": "", "domain": "",
+                                          "services": [], "endpoints": [],
+                                          "observations": []})
+
+        for a in assets:
+            h = ""
+            if a["type"] == "ip":
+                h = a["ip"] or ""
+            elif a["type"] in ("root_domain", "subdomain"):
+                h = a["domain"] or ""
+            elif a["type"] in ("service", "endpoint"):
+                h = host_of(a.get("url") or "") or a.get("ip") or a.get("domain") or ""
+            elif a["type"] == "app":
+                h = a.get("domain") or ""
+            if not h:
+                continue
+            rec = host(h)
+            rec["ip"] = rec["ip"] or (a.get("ip") or "")
+            rec["domain"] = rec["domain"] or (a.get("domain") or "")
+            if a["type"] == "service":
+                rec["services"].append({
+                    "id": a["id"], "url": a.get("url") or "", "status": a.get("status_code"),
+                    "title": a.get("page_title") or "", "service": a.get("service_name") or "",
+                    "tech": a.get("technologies") or [], "port": a.get("port"),
+                })
+            elif a["type"] == "endpoint":
+                rec["endpoints"].append({
+                    "id": a["id"], "url": a.get("url") or "", "status": a.get("status_code"),
+                    "params": a.get("params") or [], "method": a.get("extra", {}).get("method", ""),
+                })
+
+        for f in facts:
+            payload = jloads(f["payload"], {})
+            entry = {"id": f["id"], "summary": payload.get("summary", ""),
+                     "detail": payload.get("detail", ""), "source": payload.get("source", ""),
+                     "confidence": payload.get("confidence", ""),
+                     "evidence": payload.get("evidence", ""),
+                     "at": f["created_at"], "intent": f["origin"] or ""}
+            placed = False
+            for aid in fact_anchor.get(f["id"], []):
+                a = self.asset(int(aid))
+                if not a:
+                    continue
+                h = ""
+                if a["type"] in ("service", "endpoint"):
+                    h = host_of(a.get("url") or "") or a.get("ip") or ""
+                elif a["type"] == "ip":
+                    h = a["ip"] or ""
+                else:
+                    h = a.get("domain") or ""
+                if h:
+                    host(h)["observations"].append(entry)
+                    placed = True
+                    break
+            if not placed:
+                hosts.setdefault("(unattached)", {"key": "(unattached)", "ip": "",
+                                                 "domain": "", "services": [],
+                                                 "endpoints": [], "observations": []}
+                              )["observations"].append(entry)
+
+        out = []
+        for key, h in hosts.items():
+            if not (h["services"] or h["endpoints"] or h["observations"]):
+                continue
+            h["services"].sort(key=lambda s: (s["url"] or ""))
+            h["endpoints"].sort(key=lambda e: (e["url"] or ""))
+            for svc in h["services"]:
+                base = svc["url"].rstrip("/")
+                svc["endpoints"] = [e for e in h["endpoints"]
+                                    if e["url"].rstrip("/").startswith(base)]
+            attached = {id(e) for s in h["services"] for e in s["endpoints"]}
+            h["loose_endpoints"] = [e for e in h["endpoints"] if id(e) not in attached]
+            out.append(h)
+        out.sort(key=lambda h: (h["key"] == "(unattached)", h["key"]))
+        return {
+            "hosts": out,
+            "counts": {
+                "hosts": len([h for h in out if h["key"] != "(unattached)"]),
+                "services": sum(len(h["services"]) for h in out),
+                "endpoints": sum(len(h["endpoints"]) for h in out),
+                "observations": len(facts),
+            },
+            "facts": [{"id": f["id"], "summary": jloads(f["payload"], {}).get("summary", ""),
+                       "source": jloads(f["payload"], {}).get("source", ""),
+                       "confidence": jloads(f["payload"], {}).get("confidence", ""),
+                       "at": f["created_at"]} for f in facts],
+        }
 
     # ---------------------------------------------------------------- settings
     def get_setting(self, key: str, default: str = "") -> str:

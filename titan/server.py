@@ -126,9 +126,10 @@ def serve(settings, task_id: int = 0) -> int:
                     "mode": (store.get_task(tid)["mode"] or "autonomous"),
                     "approval": store.pending_approval(tid),
                     "overview": store.graph_overview(tid),
+                    "enumeration": store.enumeration(tid),
                     "findings": store.findings(tid),
                     "assets": store.assets(tid, limit=200),
-                    "activity": list(reversed(store.activity(tid, 60))),
+                    "activity": store.activity(tid, 60),
                     "running": is_running,
                 })
 
@@ -137,7 +138,7 @@ def serve(settings, task_id: int = 0) -> int:
                 return self._json({
                     "live": engine.live_snapshot(tid),
                     "usage": store.agent_usage(tid),
-                    "activity": list(reversed(store.activity(tid, 40))),
+                    "activity": store.activity(tid, 40),
                 })
 
             if path == "/api/graph":

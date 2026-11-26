@@ -353,6 +353,11 @@ def _norm_asset(a: dict) -> dict:
     if url and "://" not in str(url):
         out["url"] = "http://" + str(url)
     if out.get("url"):
+        from urllib.parse import urlparse as _up, urlunparse as _uu
+        u = _up(str(out["url"]))
+        if u.path.rstrip("/") in ("/tcp", "/udp"):      # models like to write host:8080/tcp
+            out["url"] = _uu(u._replace(path="", params="", query="", fragment=""))
+    if out.get("url"):
         from urllib.parse import urlparse
         try:
             host = urlparse(out["url"]).hostname or ""

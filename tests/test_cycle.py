@@ -365,6 +365,55 @@ class CycleTest(unittest.TestCase):
                             " ORDER BY id DESC LIMIT 1", (tid,))
         self.assertIsNotNone(row, "no halt was logged")
 
+    def test_enumeration_groups_hosts_services_and_observations(self):
+        eng = self.eng
+        tid = eng.new_task("enum", scope=[{"kind": "ip", "value": "10.1.2.3"}])
+        svc = eng.store.add_asset(tid, {"type": "service", "url": "http://10.1.2.3:8080/",
+                                        "status_code": 200, "page_title": "jetty app",
+                                        "technologies": ["Jetty 6.x"]})
+        eng.store.add_asset(tid, {"type": "endpoint", "url": "http://10.1.2.3:8080/admin",
+                                  "status_code": 302})
+        eng.store.add_fact(tid, "Jetty 6.x fronting a Jersey app", detail="Server header Jetty(6.1)",
+                           source="tool_output", confidence="observed", asset_ids=[svc])
+        eng.store.add_fact(tid, "unattached general observation", source="inference")
+
+        e = eng.store.enumeration(tid)
+        self.assertEqual(e["counts"]["hosts"], 1)
+        self.assertEqual(e["counts"]["services"], 1)
+        self.assertEqual(e["counts"]["endpoints"], 1)
+        host = [h for h in e["hosts"] if h["key"] == "10.1.2.3"][0]
+        self.assertEqual(host["services"][0]["title"], "jetty app")
+        self.assertEqual(host["services"][0]["tech"], ["Jetty 6.x"])
+        paths = [x["url"] for x in host["services"][0]["endpoints"]]
+        self.assertIn("http://10.1.2.3:8080/admin", paths)
+        self.assertEqual(host["observations"][0]["summary"], "Jetty 6.x fronting a Jersey app")
+        self.assertEqual(host["observations"][0]["confidence"], "observed")
+        general = [h for h in e["hosts"] if h["key"] == "(unattached)"][0]
+        self.assertEqual(general["observations"][0]["summary"], "unattached general observation")
+
+    def test_activity_rows_carry_local_time_and_deltas(self):
+        import time as tm
+        eng = self.eng
+        tid = eng.new_task("timing", scope=[{"kind": "url", "value": self.target.url}])
+        eng.store.log(tid, "w1", "tool", "first")
+        tm.sleep(0.05)
+        eng.store.log(tid, "w1", "tool", "second")
+        rows = eng.store.activity(tid)
+        self.assertGreaterEqual(len(rows), 2)
+        first, second = rows[-2], rows[-1]
+        self.assertRegex(first["at_local"], r"^\d{2}:\d{2}:\d{2}$")
+        self.assertIsNotNone(second["delta_s"])
+        self.assertGreaterEqual(second["delta_s"], 0)
+        self.assertEqual(second["summary"], "second")
+        # intents expose start/finish and a duration
+        nid = eng.store.add_intent(tid, "timed intent")
+        view = eng.store.open_intents(tid)[0]
+        self.assertRegex(view["started"], r"^\d{2}:\d{2}:\d{2}$")
+        self.assertIsInstance(view["took_s"], int)
+        eng.store.set_state(nid, "done")
+        done = eng.store.recent_done(tid)[0]
+        self.assertRegex(done["finished"], r"^\d{2}:\d{2}:\d{2}$")
+
     def test_delete_task_removes_derived_rows(self):
         eng = self.eng
         keep = eng.new_task("keep me", scope=[{"kind": "url", "value": self.target.url}])

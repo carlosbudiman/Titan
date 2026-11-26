@@ -229,6 +229,8 @@ async function refresh(force) {
   const prev = S.data;
   S.data = j;
   const sig = [j.task.status, j.overview.round, j.overview.facts_total,
+               (j.enumeration && j.enumeration.counts ? j.enumeration.counts.observations : 0),
+               (j.enumeration && j.enumeration.counts ? j.enumeration.counts.services : 0),
                j.overview.findings_total, j.overview.open_intents.length,
                j.overview.running_intents.length, j.running ? 1 : 0,
                j.approval ? 1 : 0, S.tab].join('|');
@@ -253,7 +255,7 @@ function render() {
   const draftHint = (document.querySelector('#hintText') || {}).value || '';
   const draftScope = (document.querySelector('#scopeValue') || {}).value || '';
   const d = S.data, ov = d.overview;
-  const tabs = ['overview','agents','intents','facts','findings','assets','traffic','activity','graph'];
+  const tabs = ['overview','agents','intents','enumeration','facts','findings','assets','traffic','activity','graph'];
   $('#main').innerHTML = `
     <div class="row" style="justify-content:space-between;align-items:flex-start">
       <div>
@@ -292,6 +294,7 @@ function render() {
   if (S.tab === 'overview') pane.innerHTML = tabOverview(d);
   if (S.tab === 'agents') { pane.innerHTML = '<div class="empty">Loading agents…</div>'; loadAgents(); }
   if (S.tab === 'intents') pane.innerHTML = tabIntents(d);
+  if (S.tab === 'enumeration') pane.innerHTML = tabEnumeration(d);
   if (S.tab === 'facts') pane.innerHTML = tabFacts(d);
   if (S.tab === 'findings') pane.innerHTML = tabFindings(d);
   if (S.tab === 'assets') pane.innerHTML = tabAssets(d);
@@ -305,12 +308,19 @@ function render() {
 function setTab(t) { S.tab = t; render(); }
 
 function intentRow(i) {
-  return `<div class="row" style="align-items:flex-start;margin-bottom:.35rem">
-    <span class="chip s-${esc(i.state)}">${esc(i.state)}</span>
-    <span style="flex:1">#${i.id} ${esc(i.summary)}</span>
-    ${i.state === 'running'
-      ? `<button onclick="steer(${i.id})">Steer</button><button class="danger" onclick="kill(${i.id})">Stop</button>`
-      : ''}</div>`;
+  const timing = i.state === 'running'
+    ? `started ${esc(i.started || '')} · running ${fmtDur(i.took_s)}`
+    : `${esc(i.started || '')} → ${esc(i.finished || '')} · ${fmtDur(i.took_s)}`;
+  return `<div style="margin-bottom:.55rem">
+    <div class="row" style="align-items:flex-start">
+      <span class="chip s-${esc(i.state)}">${esc(i.state)}</span>
+      <span style="flex:1">#${i.id} ${esc(i.summary)}</span>
+      ${i.state === 'running'
+        ? `<button onclick="steer(${i.id})">Steer</button><button class="danger" onclick="kill(${i.id})">Stop</button>`
+        : ''}
+    </div>
+    <div class="hint" style="margin-left:.1rem">${timing}</div>
+  </div>`;
 }
 
 function tabOverview(d) {
@@ -392,22 +402,98 @@ function tabIntents(d) {
   const ov = d.overview;
   const all = [...ov.running_intents, ...ov.open_intents, ...ov.recent_done];
   if (!all.length) return '<div class="empty">No intents dispatched yet.</div>';
-  return `<table><tr><th>State</th><th>#</th><th>Direction</th><th>Assets</th><th></th></tr>
+  return `<table style="table-layout:fixed">
+    <colgroup><col style="width:6.5rem"><col style="width:3rem"><col style="width:6.5rem">
+      <col style="width:5.5rem"><col><col style="width:8rem"></colgroup>
+    <tr><th>State</th><th>#</th><th>Started</th><th>Took</th><th>Direction</th><th></th></tr>
     ${all.map(i => `<tr><td class="s-${esc(i.state)}">${esc(i.state)}</td><td>${i.id}</td>
+      <td class="mono">${esc(i.started || '')}${i.finished ? '<div class="hint">→ ' + esc(i.finished) + '</div>' : ''}</td>
+      <td class="mono">${i.running ? fmtDur(i.took_s) + ' …' : fmtDur(i.took_s)}</td>
       <td>${esc(i.summary)}<div class="hint">${esc(i.blocked_reason || '')}</div></td>
-      <td>${(i.asset_ids || []).join(', ')}</td>
       <td>${i.state === 'running' ? `<button onclick="steer(${i.id})">Steer</button>
         <button class="danger" onclick="kill(${i.id})">Stop</button>` : ''}</td></tr>`).join('')}
     </table>`;
 }
 
+function tabEnumeration(d) {
+  const e = d.enumeration || {hosts: [], counts: {}};
+  if (!e.hosts || !e.hosts.length) {
+    return '<div class="empty">Nothing enumerated yet. Hosts, services, paths and observations appear here as the workers write them back.</div>';
+  }
+  const c = e.counts || {};
+  const head = `<div class="row" style="margin-bottom:.9rem">
+      <span class="chip">${c.hosts || 0} hosts</span>
+      <span class="chip">${c.services || 0} services</span>
+      <span class="chip">${c.endpoints || 0} paths</span>
+      <span class="chip">${c.observations || 0} observations</span>
+      <span style="flex:1"></span>
+      <button class="ghost" onclick="refresh(true)">Refresh</button></div>`;
+  return head + e.hosts.map(hostBlock).join('');
+}
+
+function fmtDur(sec) {
+  if (sec === null || sec === undefined) return '';
+  if (sec < 60) return sec + 's';
+  if (sec < 3600) return Math.floor(sec / 60) + 'm ' + String(sec % 60).padStart(2, '0') + 's';
+  return Math.floor(sec / 3600) + 'h ' + String(Math.floor((sec % 3600) / 60)).padStart(2, '0') + 'm';
+}
+
+function pathOf(url) {
+  try { const u = new URL(url, location.origin); return u.pathname || '/'; }
+  catch (e) { return url; }
+}
+
+function timeAgo(iso) {
+  if (!iso) return '';
+  const t = Date.parse(iso);
+  if (isNaN(t)) return iso;
+  const s = Math.max(0, Math.round((Date.now() - t) / 1000));
+  if (s < 60) return s + 's ago';
+  if (s < 3600) return Math.round(s / 60) + 'm ago';
+  if (s < 86400) return Math.round(s / 3600) + 'h ago';
+  return Math.round(s / 86400) + 'd ago';
+}
+
+function obsBlock(o) {
+  const live = o.confidence === 'observed';
+  return `<div style="margin-bottom:.55rem">
+      <div style="display:flex;gap:.5rem;align-items:flex-start">
+        <span class="dot ${live ? 'live' : 'idle'}" style="margin-top:.5rem"></span>
+        <div><div>${esc(o.summary)}</div>
+          ${o.detail ? `<div class="muted" style="font-size:12.5px">${esc(o.detail)}</div>` : ''}
+          <div class="hint">${esc(o.source || '')}${o.confidence ? ' · ' + esc(o.confidence) : ''}${o.intent ? ' · intent ' + esc(o.intent) : ''} · ${esc(timeAgo(o.at))}</div>
+        </div></div></div>`;
+}
+
+function hostBlock(h) {
+  const title = h.key === '(unattached)' ? 'General observations' : h.key;
+  const svc = (h.services || []).map(s => `<div style="margin-top:.6rem">
+      <div class="row" style="gap:.4rem"><code>${esc(s.url)}</code>
+        ${s.status ? `<span class="chip">${s.status}</span>` : ''}
+        ${s.title ? `<span class="muted">${esc(s.title)}</span>` : ''}</div>
+      ${(s.tech || []).length ? `<div class="hint">technologies: ${esc(s.tech.join(', '))}</div>` : ''}
+      ${(s.endpoints || []).length ? `<div class="hint">paths: ${s.endpoints.slice(0, 60).map(e => `<code>${esc(pathOf(e.url))}</code>`).join(' ')}${s.endpoints.length > 60 ? ' …' : ''}</div>` : ''}
+    </div>`).join('');
+  const loose = (h.loose_endpoints || []).length
+    ? `<div class="hint" style="margin-top:.5rem">other paths: ${h.loose_endpoints.slice(0, 40).map(e => `<code>${esc(e.url)}</code>`).join(' ')}</div>` : '';
+  const obs = (h.observations || []).length
+    ? `<h3 style="margin:1rem 0 .4rem">Observations</h3>` + h.observations.map(obsBlock).join('') : '';
+  return `<div class="card" style="margin-bottom:1rem">
+      <div class="row" style="justify-content:space-between;align-items:baseline">
+        <h3 style="margin:0;text-transform:none;letter-spacing:0;font-size:1rem;color:var(--fg)">${esc(title)}</h3>
+        <span class="hint">${(h.services || []).length} service(s) · ${(h.observations || []).length} observation(s)</span>
+      </div>
+      ${svc}${loose}${obs}</div>`;
+}
+
 function tabFacts(d) {
   const f = d.overview.recent_facts;
   if (!f.length) return '<div class="empty">No facts recorded yet.</div>';
-  return `<table><tr><th>#</th><th>Fact</th><th>Source</th><th>Confidence</th><th>From intent</th></tr>
+  return `<table><tr><th>#</th><th>Fact</th><th>Source</th><th>Confidence</th><th>From intent</th><th>When</th></tr>
     ${f.map(x => `<tr><td>${x.id}</td><td>${esc(x.summary)}</td>
       <td class="muted">${esc(x.source || '')}</td><td class="muted">${esc(x.confidence || '')}</td>
-      <td class="muted">${esc(x.from_intent || '')}</td></tr>`).join('')}</table>
+      <td class="muted">${esc(x.from_intent || '')}</td>
+      <td class="mono muted">${esc(x.at_local || x.created_at || '')}</td></tr>`).join('')}</table>
     <p class="hint">Showing the newest ${f.length}.</p>`;
 }
 
@@ -416,7 +502,7 @@ function tabFindings(d) {
   const opts = ['open', 'confirmed', 'false_positive', 'duplicate', 'ignored'];
   return d.findings.map(f => `<div class="card" style="margin-bottom:.7rem">
     <div class="row"><span class="chip">${esc(f.severity)}</span>
-      <b>${esc(f.vulnclass)}</b> <span class="muted">#${f.id} · ${esc(f.proof_basis)}</span>
+      <b>${esc(f.vulnclass)}</b> <span class="muted">#${f.id} · ${esc(f.proof_basis)} · ${esc(f.at_local || '')}</span>
       <span style="flex:1"></span>
       <select style="width:auto" onchange="setFinding(${f.id}, this.value)">
         ${opts.map(o => `<option ${o === f.status ? 'selected' : ''}>${o}</option>`).join('')}
@@ -439,9 +525,26 @@ function tabAssets(d) {
 
 function tabActivity(d) {
   if (!d.activity.length) return '<div class="empty">No activity yet.</div>';
-  return `<table><tr><th>#</th><th>Worker</th><th>Kind</th><th>Summary</th></tr>
-    ${d.activity.map(a => `<tr><td>${a.id}</td><td class="muted">${esc(a.worker || '')}</td>
-      <td class="muted">${esc(a.kind || '')}</td><td>${esc(a.summary || '')}</td></tr>`).join('')}</table>`;
+  const rows = d.activity.slice().reverse();          // newest first
+  return `<div class="row" style="margin-bottom:.5rem">
+      <span class="hint">${rows.length} events · times in local time (${esc(localZone())}) · Δ is the gap since the previous event</span>
+      <span style="flex:1"></span><button class="ghost" onclick="refresh(true)">Refresh</button></div>
+    <table style="table-layout:fixed">
+    <colgroup><col style="width:3.2rem"><col style="width:6.6rem"><col style="width:4.6rem">
+      <col style="width:5rem"><col style="width:8.5rem"><col></colgroup>
+    <tr><th>#</th><th>Time</th><th>Δ</th><th>Worker</th><th>Kind</th><th>Detail</th></tr>
+    ${rows.map(a => `<tr><td class="muted">${a.id}</td>
+      <td class="mono">${esc(a.at_local || '')}</td>
+      <td class="mono muted">${a.delta_s === null || a.delta_s === undefined ? '—' : fmtDur(a.delta_s)}</td>
+      <td class="muted">${esc(a.worker || '')}</td>
+      <td class="muted">${esc(a.kind || '')}</td>
+      <td title="${esc((a.summary || '').slice(0, 4000))}">${esc((a.summary || '').slice(0, 320))}${(a.summary || '').length > 320 ? ' …' : ''}</td></tr>`).join('')}</table>`;
+}
+
+function localZone() {
+  try { return Intl.DateTimeFormat().resolvedOptions().timeZone + ' ' +
+    new Date().toLocaleTimeString('en-GB', {timeZoneName: 'short'}).split(' ').pop(); }
+  catch (e) { return 'local'; }
 }
 
 async function loadGraph() {
