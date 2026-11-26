@@ -98,7 +98,8 @@ Included (behavioural parity where it matters):
 - noise profile → concrete scanner rate flags in the prompt
 - traffic capture + evidence binding
 - hint / steer / kill, activity trail, token accounting, markdown export,
-  read-only console
+  local web GUI (create/run/stop, per-intent steer and kill, hint box, both graphs,
+  report download)
 
 Dropped on purpose (this is the "lightweight" part):
 
@@ -107,6 +108,22 @@ Dropped on purpose (this is the "lightweight" part):
   Bedrock/Anthropic gateways, LLM judge, MCP host, custom tool builder, browser
   automation server, intercept UI, digests/cold-node folding
 - Redis-less horizontal scale (one process, N threads; SQLite is the blackboard)
+
+## The GUI
+
+`titan serve` opens a local console at http://127.0.0.1:9911 — single page, no JS
+framework, no build step, no external assets:
+
+- task list; **+ task** form (goal + `kind=value` scope lines)
+- **run** / **stop** (rounds, workers), live polling every 2 s
+- tabs: overview, intents (with per-intent **steer** / **kill**), facts, findings
+  with evidence and PoC, assets, activity trail, raw graph JSON
+- **queue hint** box → lands as a hint node the planner reads next round
+- **export .md** downloads the engagement report
+
+It is an operator UI for one person on one box, not a multi-user service: binding
+off `127.0.0.1` is refused unless `TITAN_CONSOLE_TOKEN` is set, and then every
+request must carry `X-Titan-Token`.
 
 ## Install (no Docker, no server, no pip packages)
 
@@ -171,8 +188,9 @@ Put these in `~/.titan/env` and `source` it, or export them in your shell rc.
 | `TITAN_MAX_PER_HOST` | `1` | in-flight per host |
 | `TITAN_NOISE_PROFILE` | `balanced` | `quiet` \| `balanced` \| `aggressive` \| `off` |
 | `TITAN_USER_AGENT` | `Titan-Assessment/0.2.0` | outbound UA |
-| `TITAN_CONSOLE_PORT` | `9911` | read-only console (localhost) |
-| `TITAN_CONSOLE_BIND` | `127.0.0.1` | console bind address |
+| `TITAN_CONSOLE_PORT` | `9911` | web GUI port |
+| `TITAN_CONSOLE_BIND` | `127.0.0.1` | GUI bind address |
+| `TITAN_CONSOLE_TOKEN` | *(empty)* | required header `X-Titan-Token` when bound off-localhost |
 | `TITAN_ALLOW_SHELL` | `1` | `0` disables `bash`/`webfetch` scope checks — do not |
 | `TITAN_DENY_RULES` | *(empty)* | file of extra deny regexes, one per line |
 
@@ -190,7 +208,7 @@ titan findings 1               # findings with evidence and traffic refs
 titan assets 1
 titan ask 1 "any auth bypass candidate yet?"
 titan export 1 --out report.md
-titan serve                    # read-only console on 127.0.0.1:9911
+titan serve                    # web GUI on 127.0.0.1:9911
 titan skills --read php2shell
 ```
 
@@ -238,7 +256,7 @@ titan/agents.py        prompts, prompt assembly, tool-calling loop
 titan/engine.py        orchestrator: goals → planner rounds → workers → judgement
 titan/guard.py         deny rules, scope, pacing, audit, failure attribution
 titan/skills.py        SKILL.md index + on-demand load
-titan/server.py        read-only console (localhost)
+titan/server.py        web GUI + JSON API (localhost, token-gated off-localhost)
 titan/cli.py           command line
 skills/                ARTEX skills, verbatim
 docs/architecture.md   data model, lifecycle, design notes
@@ -265,7 +283,7 @@ asserts: planner dispatch → worker assets/fact/finding → traffic evidence �
 100% → `prove_goal` → `achieved`; plus guard scope/deny/constraint blocks, the
 `target_response` proof refusal, finding dedupe, and the inferred-candidate refusal.
 `test_cli` additionally proves the urllib transport, tool-call parsing, cross-process
-SQLite persistence, markdown export and the read-only console.
+SQLite persistence, markdown export and the GUI's API (hint queue, 404 handling, report download).
 
 ## Limitations
 
@@ -288,8 +306,8 @@ SQLite persistence, markdown export and the read-only console.
 - Non-destructive is not the same as read-only: `report_finding`'s prompt requires
   proving on your own objects first and touching at most three non-owned objects
   with the smallest demonstrating request.
-- The console is read-only and binds `127.0.0.1`. There is no auth; do not expose
-  it.
+- The GUI binds `127.0.0.1` and has no auth there. Binding it elsewhere is refused
+  unless `TITAN_CONSOLE_TOKEN` is set; then every request needs `X-Titan-Token`.
 
 ## Licence
 

@@ -9,7 +9,7 @@ import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
-VERSION = "0.2.0"
+VERSION = "0.3.0"
 TOOL_NAME = "titan"
 
 
@@ -65,6 +65,7 @@ class Settings:
     noise_profile: str = field(default_factory=lambda: _env("TITAN_NOISE_PROFILE", "balanced"))
     console_port: int = field(default_factory=lambda: _env_int("TITAN_CONSOLE_PORT", 9911))
     console_bind: str = field(default_factory=lambda: _env("TITAN_CONSOLE_BIND", "127.0.0.1"))
+    console_token: str = field(default_factory=lambda: _env("TITAN_CONSOLE_TOKEN", ""))
 
     # Guard
     deny_rules_file: str = field(default_factory=lambda: _env("TITAN_DENY_RULES", ""))

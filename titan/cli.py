@@ -358,7 +358,7 @@ def build_parser() -> argparse.ArgumentParser:
     ex.add_argument("--out", default="")
     ex.set_defaults(fn=cmd_export)
 
-    sv = sub.add_parser("serve", help="read-only local console")
+    sv = sub.add_parser("serve", help="web GUI + JSON API (localhost)")
     sv.add_argument("--task", type=int, default=0)
     sv.set_defaults(fn=cmd_serve)
 

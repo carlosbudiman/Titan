@@ -150,29 +150,56 @@ class CliTest(unittest.TestCase):
         self.assertIn("information-disclosure", text)
         self.assertIn("Directory index exposed", text)
 
-    def test_console_is_read_only_and_local(self):
+    def test_console_api(self):
         self.provider.replies = [{"role": "assistant", "content": json.dumps(
             {"goals": ["noop"], "constraints": []})}]
-        self.titan("new", "console test")
+        self.titan("new", "console test", "--scope", "domain=example.com")
         env = self.env()
         env["TITAN_CONSOLE_PORT"] = "19887"
         proc = subprocess.Popen([sys.executable, str(TITAN), "serve"], env=env,
                                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        base = "http://127.0.0.1:19887"
         try:
             body = ""
-            for _ in range(40):
+            for _ in range(50):
                 try:
-                    with urllib.request.urlopen("http://127.0.0.1:19887/api/overview?task=1",
-                                                timeout=2) as r:
+                    with urllib.request.urlopen(base + "/api/state?task=1", timeout=2) as r:
                         body = r.read().decode()
                         break
                 except OSError:
                     time.sleep(0.1)
             self.assertIn("goals", body)
-            with urllib.request.urlopen("http://127.0.0.1:19887/", timeout=2) as r:
+            state = json.loads(body)
+            self.assertEqual(state["task"]["id"], 1)
+            self.assertFalse(state["running"])
+
+            with urllib.request.urlopen(base + "/", timeout=2) as r:
                 page = r.read().decode()
             self.assertIn("DEWAGUARD TITAN", page)
             self.assertNotIn("ARTEX", page)
+
+            # mutating endpoint: queue a hint, then read it back from the graph
+            req = urllib.request.Request(
+                base + "/api/hint", method="POST",
+                data=json.dumps({"task": 1, "text": "check the upload endpoint"}).encode(),
+                headers={"Content-Type": "application/json"})
+            with urllib.request.urlopen(req, timeout=5) as r:
+                self.assertEqual(r.status, 200)
+
+            with urllib.request.urlopen(base + "/api/state?task=1", timeout=2) as r:
+                state = json.loads(r.read().decode())
+            hints = [h["text"] for h in state["overview"]["hints"]]
+            self.assertIn("check the upload endpoint", hints)
+
+            # report download
+            with urllib.request.urlopen(base + "/api/export?task=1", timeout=2) as r:
+                md = r.read().decode()
+            self.assertIn("Engagement report", md)
+
+            # unknown task must not 500
+            with self.assertRaises(urllib.error.HTTPError) as ctx:
+                urllib.request.urlopen(base + "/api/state?task=999", timeout=2)
+            self.assertEqual(ctx.exception.code, 404)
         finally:
             proc.terminate()
             proc.wait(timeout=10)

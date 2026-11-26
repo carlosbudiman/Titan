@@ -38,8 +38,22 @@ class Engine:
         self.pacer = Pacer(settings.rps, settings.max_per_host)
         self.inboxes: dict[int, queue.Queue] = {}
         self.kill_flags: dict[int, threading.Event] = {}
+        self.stop_flags: dict[int, threading.Event] = {}
         self.lock = threading.Lock()
         self.stalls = 0
+
+    # ------------------------------------------------------------------ run control
+    def request_stop(self, task_id: int) -> None:
+        with self.lock:
+            self.stop_flags.setdefault(task_id, threading.Event()).set()
+
+    def stop_requested(self, task_id: int) -> bool:
+        ev = self.stop_flags.get(task_id)
+        return bool(ev and ev.is_set())
+
+    def clear_stop(self, task_id: int) -> None:
+        with self.lock:
+            self.stop_flags.pop(task_id, None)
 
     # ------------------------------------------------------------------ runtime API (tools)
     def steer(self, intent_id: int, message: str) -> bool:
@@ -177,6 +191,8 @@ class Engine:
                     break
             if stop.is_set():
                 msgs.append("[operator] This work is being stopped. Land what you have now and stop.")
+            if self.stop_requested(task_id):
+                msgs.append("[operator] The whole task is being stopped. Land what you have now and stop.")
             return msgs
 
         facts_before = self._yield_count(iid)
@@ -214,9 +230,14 @@ class Engine:
         rounds = rounds or self.settings.max_rounds
         workers = max(1, workers or self.settings.max_workers)
         deadline = (time.time() + self.settings.task_deadline_s) if self.settings.task_deadline_s else 0
+        self.clear_stop(task_id)
         self.emit(f"Titan task #{task_id}: {task['goal']}")
 
         for rnd in range(max(1, rounds)):
+            if self.stop_requested(task_id):
+                self.emit("[engine] stop requested; finishing current work")
+                self.store.set_task_status(task_id, "stopped")
+                break
             if self.store.goal_met(task_id):
                 self.store.set_task_status(task_id, "achieved")
                 break

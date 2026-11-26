@@ -145,7 +145,7 @@ Post-call, results are attributed `blocked` / `error` / `ok`, which is what make
 | ARTEX feature | Titan decision |
 |---|---|
 | PostgreSQL + migrations + 60 tables | SQLite, 14 tables. Single box, one file to back up. |
-| Next.js console, auth, users, CSRF | read-only localhost page + JSON endpoints. |
+| Next.js console, auth, users, CSRF | single-page localhost console + JSON API, token-gated off-localhost. |
 | Cold-node digests, compaction daemons, NOA | not implemented; overview caps suffice at this scale. |
 | LLM fallback judge on every tool call | replaced by deterministic deny regexes + scope; fewer tokens, predictable. |
 | MCP host, custom tool builder, traffic rewrite/tamper, browser MCP | out of scope; `bash` + `webfetch` cover the same ground. |
@@ -161,3 +161,19 @@ Post-call, results are attributed `blocked` / `error` / `ok`, which is what make
 - New node kind/edge rel: extend the schema doc and `NODE_STATES`; SQLite has no
   CHECK on kinds, so no migration is required.
 - Provider-specific quirks (tool-call parsing, no-tools models): `titan/llm.py`.
+
+## 7. Console
+
+`titan/server.py` serves one HTML document and a JSON API from the same process as
+the engine. The engine is instantiated once; `/api/run` starts `run_task` on a
+daemon thread and refuses a second concurrent run of the same task (409). `/api/stop`
+sets the engine's per-task stop flag, which the round loop and the worker poll
+check, so a stop lands between rounds or inside a running intent.
+
+Endpoints: `GET /`, `/api/tasks`, `/api/state?task=N`, `/api/export?task=N`;
+`POST /api/task`, `/api/run`, `/api/stop`, `/api/hint`, `/api/steer`, `/api/kill`.
+
+Auth: loopback-only by default. If `TITAN_CONSOLE_BIND` is not a loopback address the
+process refuses to start without `TITAN_CONSOLE_TOKEN`, and then requires
+`X-Titan-Token` on every request. There is no CSRF token: the API is JSON-only and
+the console is not meant to be exposed.
