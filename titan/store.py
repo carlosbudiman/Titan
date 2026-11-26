@@ -256,6 +256,11 @@ class Store:
         self.lock = threading.RLock()
         with self.lock:
             self.db.executescript(SCHEMA)
+            for stmt in ("ALTER TABLE explorations ADD COLUMN workdir TEXT",):
+                try:
+                    self.db.execute(stmt)
+                except sqlite3.OperationalError:
+                    pass
             self.db.commit()
 
     # ---------------------------------------------------------------- helpers
@@ -275,12 +280,12 @@ class Store:
 
     # ---------------------------------------------------------------- tasks
     def create_task(self, goal: str, title: str = "", description: str = "",
-                    scope: list[dict] | None = None) -> int:
+                    scope: list[dict] | None = None, workdir: str = "") -> int:
         ts = now()
         tid = self.x(
-            "INSERT INTO explorations(title, goal, description, status, created_at, updated_at)"
-            " VALUES(?,?,?,'open',?,?)",
-            (title or goal[:80], goal, description, ts, ts))
+            "INSERT INTO explorations(title, goal, description, status, workdir, created_at, updated_at)"
+            " VALUES(?,?,?,'open',?,?,?)",
+            (title or goal[:80], goal, description, workdir or "", ts, ts))
         self.add_node(tid, "begin", {"goal": goal, "scope": scope or []}, state="open", origin="operator")
         self.add_node(tid, "goal", {"text": goal}, state="open", origin="operator")
         for s in scope or []:
@@ -295,6 +300,44 @@ class Store:
 
     def set_task_status(self, task_id: int, status: str) -> None:
         self.x("UPDATE explorations SET status=?, updated_at=? WHERE id=?", (status, now(), task_id))
+
+    def rename_task(self, task_id: int, title: str) -> bool:
+        with self.lock:
+            cur = self.db.execute("UPDATE explorations SET title=?, updated_at=? WHERE id=?",
+                                  (title.strip()[:200] or f"task {task_id}", now(), task_id))
+            self.db.commit()
+            return cur.rowcount > 0
+
+    def delete_task(self, task_id: int) -> bool:
+        """Remove one engagement and everything derived from it. Assets are shared and
+        only lose this task id."""
+        if not self.get_task(task_id):
+            return False
+        with self.lock:
+            node_ids = [r["id"] for r in self.db.execute(
+                "SELECT id FROM exploration_nodes WHERE exploration_id=?", (task_id,))]
+            for nid in node_ids:
+                self.db.execute("DELETE FROM exploration_anchors WHERE node_id=?", (nid,))
+            self.db.execute("DELETE FROM exploration_edges WHERE exploration_id=?", (task_id,))
+            self.db.execute("DELETE FROM exploration_nodes WHERE exploration_id=?", (task_id,))
+            self.db.execute("DELETE FROM findings WHERE task_id=?", (task_id,))
+            self.db.execute("DELETE FROM traffic WHERE task_id=?", (task_id,))
+            self.db.execute("DELETE FROM activity WHERE task_id=?", (task_id,))
+            self.db.execute("DELETE FROM task_constraints WHERE task_id=?", (task_id,))
+            self.db.execute("DELETE FROM task_coverage WHERE task_id=?", (task_id,))
+            self.db.execute("DELETE FROM task_scope WHERE task_id=?", (task_id,))
+            self.db.execute("DELETE FROM llm_usage WHERE task_id=?", (task_id,))
+            self.db.execute("DELETE FROM audit_log WHERE task_id=?", (task_id,))
+            self.db.execute("DELETE FROM agent_state WHERE task_id=?", (task_id,))
+            self.db.execute("DELETE FROM explorations WHERE id=?", (task_id,))
+            for row in self.db.execute("SELECT id, task_ids FROM assets").fetchall():
+                ids = jloads(row["task_ids"], [])
+                if task_id in ids:
+                    ids = [i for i in ids if i != task_id]
+                    self.db.execute("UPDATE assets SET task_ids=? WHERE id=?",
+                                    (json.dumps(ids), row["id"]))
+            self.db.commit()
+        return True
 
     def bump_round(self, task_id: int) -> int:
         self.x("UPDATE explorations SET round_no=round_no+1, updated_at=? WHERE id=?", (now(), task_id))
@@ -733,6 +776,8 @@ class Store:
             "coverage": cov,
             "hints": hints,
             "constraints": self.constraints(task_id),
+            "scope": self.scope(task_id),
+            "workdir": (t["workdir"] if t else "") or "",
         }
 
     def node_detail(self, node_id: int) -> dict | None:

@@ -10,7 +10,7 @@ import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
-VERSION = "0.4.0"
+VERSION = "0.5.0"
 TOOL_NAME = "titan"
 
 

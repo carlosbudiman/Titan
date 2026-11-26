@@ -189,7 +189,7 @@ class CliTest(unittest.TestCase):
 
             with urllib.request.urlopen(base + "/", timeout=2) as r:
                 page = r.read().decode()
-            self.assertIn("DEWAGUARD TITAN", page)
+            self.assertIn("Dewaguard Titan", page)
             self.assertNotIn("ARTEX", page)
 
             # mutating endpoint: queue a hint, then read it back from the graph
@@ -312,8 +312,10 @@ class CliTest(unittest.TestCase):
             self.assertIn("session.upload_progress", body)
 
             page = urllib.request.urlopen(base + "/", timeout=5).read().decode()
-            for view in ("DEWAGUARD TITAN", "settings", "agents", "skills", "traffic"):
+            for view in ("Dewaguard Titan", "settings", "agents", "skills", "traffic"):
                 self.assertIn(view, page)
+            self.assertIn("data-theme", page)          # light / dark switch
+            self.assertIn("prefers-color-scheme", page)
 
             with self.assertRaises(urllib.error.HTTPError) as ctx:
                 post("/api/finding", {"id": 999, "status": "nope"})

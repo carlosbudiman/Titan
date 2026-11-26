@@ -262,8 +262,25 @@ def serve(settings, task_id: int = 0) -> int:
                 scope = [s for s in (body.get("scope") or [])
                          if isinstance(s, dict) and s.get("value")]
                 tid = engine.new_task(goal, str(body.get("title") or ""),
-                                      str(body.get("desc") or ""), scope)
+                                      str(body.get("desc") or ""), scope,
+                                      str(body.get("workdir") or "").strip())
                 return self._json({"task": tid})
+
+            if path == "/api/task/delete":
+                tid = int(body.get("task") or 0)
+                if not store.delete_task(tid):
+                    return self._json({"error": f"no task {tid}"}, 404)
+                engine.live_drop("planner")
+                return self._json({"deleted": tid})
+
+            if path == "/api/task/rename":
+                tid = int(body.get("task") or 0)
+                title = str(body.get("title") or "").strip()
+                if not title:
+                    return self._json({"error": "title is required"}, 400)
+                if not store.rename_task(tid, title):
+                    return self._json({"error": f"no task {tid}"}, 404)
+                return self._json({"task": tid, "title": title})
 
             if path == "/api/run":
                 tid = int(body.get("task") or 0)

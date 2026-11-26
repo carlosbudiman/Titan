@@ -58,22 +58,39 @@ class Scope:
             self.add(e.get("kind", ""), e.get("value", ""))
 
     def add(self, kind: str, value: str) -> None:
-        v = (value or "").strip().lower()
+        """One entry may carry several targets and wildcards ("https://a.com/, *.b.com/*")."""
+        raw = (value or "").strip()
+        if not raw:
+            return
+        for token in re.split(r"[,\s]+", raw):
+            self._add_one(kind, token)
+
+    def _add_one(self, kind: str, token: str) -> None:
+        v = token.strip().strip("\"'")
         if not v:
             return
+        if kind in ("ip", "cidr"):
+            try:
+                self.ips.add(ipaddress.ip_network(v, strict=False))
+            except ValueError:
+                self.domains.add(v.lower())
+            return
+        if v.startswith("*."):
+            v = v[2:]
+        v = re.sub(r"^https?://", "", v, flags=re.I)
+        v = v.split("/")[0].rstrip("*").strip()
+        if not v:
+            return
+        if not re.fullmatch(r"\[[0-9a-f:]+\]", v) and v.count(":") == 1:
+            v = v.split(":")[0]            # host:port -> host (IPv6 stays intact)
+        v = v.lower()
+        try:
+            self.ips.add(ipaddress.ip_network(v, strict=False))
+            return
+        except ValueError:
+            pass
         if kind in ("domain", "url"):
-            v = re.sub(r"^https?://", "", v).split("/")[0].split(":")[0]
             self.domains.add(v)
-        elif kind == "ip":
-            try:
-                self.ips.add(ipaddress.ip_network(v, strict=False))
-            except ValueError:
-                pass
-        elif kind == "cidr":
-            try:
-                self.ips.add(ipaddress.ip_network(v, strict=False))
-            except ValueError:
-                pass
         elif kind == "keyword":
             self.keywords.add(v)
 
@@ -86,6 +103,8 @@ class Scope:
             return True
         if self.allow_local and h in LOOPBACK:
             return True
+        if h in self.domains:          # exact entry, incl. a legacy IP-in-domain row
+            return True
         try:
             ip = ipaddress.ip_address(h)
         except ValueError:
@@ -93,7 +112,9 @@ class Scope:
         if ip is not None:
             if ip.is_loopback and self.allow_local:
                 return True
-            return any(ip in net for net in self.ips)
+            if any(ip in net for net in self.ips):
+                return True
+            return any(str(ip) == d for d in self.domains)
         for d in self.domains:
             if h == d or h.endswith("." + d):
                 return True
@@ -147,12 +168,14 @@ class Pacer:
 
 
 class Guard:
-    def __init__(self, store, settings, task_id: int, worker: str, scope: Scope):
+    def __init__(self, store, settings, task_id: int, worker: str, scope: Scope,
+                 workdir: str | Path | None = None):
         self.store = store
         self.settings = settings
         self.task_id = task_id
         self.worker = worker
         self.scope = scope
+        self.workdir = Path(workdir).expanduser() if workdir else Path(settings.workdir)
         self.builtin = [re.compile(p, re.I) for p in BUILTIN_DENY]
         extra = []
         if settings.deny_rules_file:
@@ -162,6 +185,10 @@ class Guard:
                          if l.strip() and not l.strip().startswith("#")]
         self.extra = extra
         self.attrib = {"ok": 0, "blocked": 0, "error": 0}
+
+    def scope_summary(self) -> str:
+        entries = [f"{s['kind']}={s['value']}" for s in self.store.scope(self.task_id)]
+        return "Authorized scope: " + (", ".join(entries) if entries else "empty")
 
     def _deny_hit(self, text: str) -> str:
         for rx in self.builtin + self.extra:
@@ -177,10 +204,10 @@ class Guard:
             cmd = str(args.get("url", ""))
         elif tool in ("write_file", "edit_file"):
             p = str(args.get("path", ""))
-            wd = self.settings.workdir.resolve()
+            wd = self.workdir.resolve()
             try:
                 if not Path(p).expanduser().resolve().is_relative_to(wd):
-                    return f"file path {p} is outside the task work directory"
+                    return f"file path {p} is outside the engagement work directory {wd}"
             except (OSError, ValueError):
                 return f"file path {p} cannot be resolved"
         else:
@@ -207,7 +234,8 @@ class Guard:
             if not ok:
                 self.store.audit(self.task_id, self.worker, tool, "block", why, cmd)
                 return False, (f"{BANNER} This call was intercepted. Reason: {why}. "
-                               f"Do not reach it another way.")
+                               f"{self.scope_summary()}. Do not reach it another way: either "
+                               f"stay inside that scope or record a fact that it is unreachable.")
         self.store.audit(self.task_id, self.worker, tool, "allow", "", cmd)
         return True, ""
 

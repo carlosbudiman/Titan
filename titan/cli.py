@@ -250,7 +250,8 @@ def cmd_new(args) -> int:
         scope.append({"kind": k.strip(), "value": v.strip()})
     if not scope:
         print("warning: no --scope given; every target will be refused by the guard")
-    tid = eng.new_task(args.goal, args.title or "", args.desc or "", scope)
+    tid = eng.new_task(args.goal, args.title or "", args.desc or "", scope,
+                       getattr(args, "workdir", "") or "")
     print(f"task #{tid} created")
     for g in eng.store.goals(tid):
         print(f"  goal {g['id']}: {g['text']}")
@@ -480,6 +481,8 @@ def build_parser() -> argparse.ArgumentParser:
     n.add_argument("--desc", default="")
     n.add_argument("--scope", action="append", metavar="KIND=VALUE",
                    help="authorized target: domain=, ip=, cidr=, url=, keyword=")
+    n.add_argument("--workdir", default="",
+                   help="directory for this engagement's artifacts (default under ~/.titan/runs)")
     n.set_defaults(fn=cmd_new)
 
     r = sub.add_parser("run", help="run the orchestrator on a task")

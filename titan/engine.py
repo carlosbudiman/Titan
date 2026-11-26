@@ -151,9 +151,24 @@ class Engine:
             return ""
 
     # ------------------------------------------------------------------ tasks
+    def task_workdir(self, task_id: int) -> Path:
+        """Per-engagement artifact root: the path chosen at creation, else the default."""
+        t = self.store.get_task(task_id)
+        base = Path(t["workdir"]).expanduser() if (t and t["workdir"]) else \
+            Path(self.settings.workdir) / "tasks" / str(task_id)
+        base.mkdir(parents=True, exist_ok=True)
+        return base
+
+    def run_workdir(self, task_id: int, intent_id: int = 0) -> Path:
+        base = self.task_workdir(task_id)
+        p = base if not intent_id else base / f"i{intent_id}"
+        p.mkdir(parents=True, exist_ok=True)
+        return p
+
     def new_task(self, goal: str, title: str = "", description: str = "",
-                 scope: list[dict] | None = None) -> int:
-        tid = self.store.create_task(goal, title, description, scope)
+                 scope: list[dict] | None = None, workdir: str = "") -> int:
+        tid = self.store.create_task(goal, title, description, scope, workdir)
+        self.task_workdir(tid)
         goals, constraints = self.decompose(goal, description)
         self._apply_goals(tid, goals)
         for c in constraints:
@@ -201,9 +216,10 @@ class Engine:
         before = self.store.pending_intents(task_id)
         task = self.store.get_task(task_id)
         scope = Scope(self.store.scope(task_id))
-        guard = Guard(self.store, self.settings, task_id, "planner", scope)
+        wd = self.run_workdir(task_id)
+        guard = Guard(self.store, self.settings, task_id, "planner", scope, wd)
         ctx = Ctx(self.store, self.settings, task_id, "planner", "planner",
-                  self.settings.run_dir(task_id), guard, self.pacer, self)
+                  wd, guard, self.pacer, self)
         ctx.skills = self.skills
 
         system = (render(PLANNER_PROMPT, goal=task["goal"],
@@ -255,9 +271,10 @@ class Engine:
         if not task or (ov["facts_total"] == 0 and ov["findings_total"] == 0):
             return ""
         scope = Scope(self.store.scope(task_id))
-        guard = Guard(self.store, self.settings, task_id, "planner", scope)
+        wd = self.run_workdir(task_id)
+        guard = Guard(self.store, self.settings, task_id, "planner", scope, wd)
         ctx = Ctx(self.store, self.settings, task_id, "planner", "planner",
-                  self.settings.run_dir(task_id), guard, self.pacer, self)
+                  wd, guard, self.pacer, self)
         ctx.skills = self.skills
         system = (render(PLANNER_PROMPT, goal=task["goal"],
                          constraints=constraints_block(self.store, task_id))
@@ -288,9 +305,10 @@ class Engine:
         iid = int(intent["id"])
         summary = json.loads(intent["payload"]).get("summary", "")
         scope = Scope(self.store.scope(task_id))
-        guard = Guard(self.store, self.settings, task_id, f"w{iid}", scope)
+        wd = self.run_workdir(task_id, iid)
+        guard = Guard(self.store, self.settings, task_id, f"w{iid}", scope, wd)
         ctx = Ctx(self.store, self.settings, task_id, "worker", f"w{iid}",
-                  self.settings.run_dir(task_id, iid), guard, self.pacer, self, node_id=iid)
+                  wd, guard, self.pacer, self, node_id=iid)
         ctx.skills = self.skills
         inbox: queue.Queue = queue.Queue()
         stop = threading.Event()
@@ -469,9 +487,10 @@ class Engine:
     # ------------------------------------------------------------------ chat
     def chat(self, task_id: int, message: str) -> str:
         scope = Scope(self.store.scope(task_id))
-        guard = Guard(self.store, self.settings, task_id, "main", scope)
+        wd = self.run_workdir(task_id)
+        guard = Guard(self.store, self.settings, task_id, "main", scope, wd)
         ctx = Ctx(self.store, self.settings, task_id, "main", "main",
-                  self.settings.run_dir(task_id), guard, self.pacer, self)
+                  wd, guard, self.pacer, self)
         ctx.skills = self.skills
         system = ("You are the operator interface of Dewaguard Titan. You do not run the engagement "
                   "yourself: read the graph, answer, and queue hints with add_hint or steer_work. "

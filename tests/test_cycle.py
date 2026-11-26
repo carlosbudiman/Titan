@@ -160,7 +160,7 @@ class CycleTest(unittest.TestCase):
 
         ok, msg = g.check("write_file", {"path": "/etc/passwd", "content": "x"})
         self.assertFalse(ok)
-        self.assertIn("outside the task work directory", msg)
+        self.assertIn("work directory", msg)
 
         ok, msg = g.check("bash", {"command": "sqlmap -u https://example.com/?a=1"})
         self.assertTrue(ok)  # constraint is on the task that declared it, not this one
@@ -234,6 +234,82 @@ class CycleTest(unittest.TestCase):
         names = {t["function"]["name"] for t in
                  eng.registry.specs("planner") if t["function"]["name"] in eng.JUDGE_ONLY}
         self.assertNotIn("add_intent", names)
+
+
+    def test_ip_targets_are_allowed_in_scope(self):
+        """Regression: an IP given as url=/domain= used to land in the domain set and
+        was then refused, which pushed every worker onto 127.0.0.1."""
+        from titan.guard import Guard, Scope
+        eng = self.eng
+        tid = eng.new_task("ip scope", scope=[{"kind": "url", "value": "http://10.10.14.7:8080/"},
+                                              {"kind": "domain", "value": "192.168.1.50"}])
+        s = Scope(eng.store.scope(tid))
+        g = Guard(eng.store, eng.settings, tid, "t", s)
+        for cmd in ("curl -s http://10.10.14.7:8080/", "nmap -sV -p80 10.10.14.7",
+                    "curl -s http://192.168.1.50:3000/api", "curl -s http://127.0.0.1:8080/"):
+            ok, msg = g.check("bash", {"command": cmd})
+            self.assertTrue(ok, f"{cmd} was refused: {msg}")
+        ok, msg = g.check("bash", {"command": "curl -s http://10.10.14.8/"})
+        self.assertFalse(ok)
+        self.assertIn("Authorized scope", msg)
+
+    def test_messy_scope_strings_are_split(self):
+        """Regression: "https://a.com/, *.a.com/*" and an IP typed as domain= used to
+        parse into "a.com," / a domain-set IP and refuse every real target."""
+        from titan.guard import Scope
+        s = Scope([{"kind": "domain", "value": "https://zing-id.com/, *.zing-id.com/*"},
+                   {"kind": "domain", "value": "192.168.168.98"},
+                   {"kind": "ip", "value": "10.0.0.0/24"}])
+        self.assertTrue(s.allows_host("zing-id.com"))
+        self.assertTrue(s.allows_host("api.zing-id.com"))
+        self.assertTrue(s.allows_host("192.168.168.98"))
+        self.assertTrue(s.allows_host("10.0.0.42"))
+        self.assertFalse(s.allows_host("zing-id.com.evil.test"))
+        self.assertFalse(s.allows_host("192.168.168.99"))
+
+    def test_engagement_workdir_is_used_and_enforced(self):
+        eng = self.eng
+        target = self.tmp / "case" / "pelican"
+        tid = eng.new_task("workdir", scope=[{"kind": "url", "value": self.target.url}],
+                           workdir=str(target))
+        self.assertTrue(target.is_dir())
+        self.assertEqual(eng.task_workdir(tid), target)
+        self.assertEqual(eng.run_workdir(tid, 12), target / "i12")
+        self.assertTrue((target / "i12").is_dir())
+
+        from titan.guard import Guard, Scope
+        g = Guard(eng.store, eng.settings, tid, "t", Scope(eng.store.scope(tid)),
+                  eng.run_workdir(tid, 12))
+        ok, _ = g.check("write_file", {"path": str(target / "i12" / "notes.md"), "content": "x"})
+        self.assertTrue(ok)
+        ok, msg = g.check("write_file", {"path": "/etc/passwd", "content": "x"})
+        self.assertFalse(ok)
+        self.assertIn("engagement work directory", msg)
+
+    def test_delete_task_removes_derived_rows(self):
+        eng = self.eng
+        keep = eng.new_task("keep me", scope=[{"kind": "url", "value": self.target.url}])
+        drop = eng.new_task("drop me", scope=[{"kind": "url", "value": self.target.url}])
+        eng.store.add_asset(drop, {"type": "service", "url": self.target.url})
+        eng.store.add_fact(drop, "fact", source="tool_output")
+        eng.store.add_traffic(drop, "GET", self.target.url, 200, {}, "", {}, "ok")
+        eng.store.add_finding(drop, "xss", "high", "s", "evidence", endpoint="e")
+        eng.store.add_scope(drop, "domain", "example.org")
+
+        self.assertTrue(eng.store.rename_task(drop, "renamed"))
+        self.assertEqual(eng.store.get_task(drop)["title"], "renamed")
+
+        self.assertTrue(eng.store.delete_task(drop))
+        self.assertIsNone(eng.store.get_task(drop))
+        for table, col in (("exploration_nodes", "exploration_id"), ("findings", "task_id"),
+                           ("traffic", "task_id"), ("task_scope", "task_id"),
+                           ("activity", "task_id")):
+            left = eng.store.one(f"SELECT COUNT(*) c FROM {table} WHERE {col}=?", (drop,))
+            self.assertEqual(left["c"], 0, table)
+        # the other engagement is untouched
+        self.assertIsNotNone(eng.store.get_task(keep))
+        self.assertTrue(eng.store.goals(keep))
+        self.assertFalse(eng.store.delete_task(drop))
 
 
 def _ctx(eng, tid):

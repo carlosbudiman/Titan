@@ -212,6 +212,27 @@ titan doctor
 #     llm probe ok (812 ms), status ready
 ```
 
+### Scope and the artifact directory
+
+Every engagement carries its own authorized scope and its own artifact directory:
+
+```bash
+titan new "..." --scope domain=zing-id.com --scope ip=192.168.168.98 \
+  --workdir ~/cases/zing-id
+```
+
+`--scope` can be repeated, and one value may hold several targets
+(`--scope domain="https://a.com/, *.a.com/*"`). Hostnames, IPs, CIDRs, URLs and
+keywords are all normalised; an IP written as `domain=` still works. Anything outside
+the scope is refused by the guard with a message naming the current scope, so the
+agent can tell "not authorized" from "not reachable". The scope is also editable from
+the engagement's overview panel.
+
+`--workdir` is where every artifact of that engagement goes (notes, loot, scan output);
+workers get a subdirectory per intent (`<workdir>/i<intent>`). Without it the default
+is `~/.titan/runs/tasks/<id>`. The path is shown in the engagement header and enforced:
+file writes outside it are blocked.
+
 ## First run
 
 ```bash
@@ -242,7 +263,7 @@ One process, no build step, no JavaScript dependencies, no external assets.
 
 | View | What it does |
 |---|---|
-| **task** | per-task detail: overview (goals, constraints, hints, queue), run/stop with rounds + workers, steer or kill a running intent, findings with severity/status editing and evidence, assets, traffic, activity, graph |
+| **task** | per-task detail: overview (goals, constraints, **authorized scope with add form**, hints, queue), run/stop with rounds + workers, steer or kill a running intent, findings with severity/status editing and evidence, assets, traffic, activity, graph |
 | **agents** | live planner and worker cards: state (`thinking`/`tool`/`idle`/`stale`), current tool call, elapsed time, turn count, per-agent tokens; token usage table; recent step trail. Fed from `agent_state`, so runs started from the CLI are visible here too |
 | **settings** | model endpoint, model picker with **list models**, API key (write-only, masked), timeout/max tokens/temperature, pacing (rps, workers, noise profile), **test connection** with latency |
 | **skills** | all 11 skills with descriptions; click to read the full `SKILL.md` |
@@ -252,6 +273,11 @@ The graph tab draws both graphs' exploration side as an SVG: nodes laid out
 left-to-right by provenance, coloured by kind (`begin`, `goal`, `intent`, `fact`,
 `finding`, `hint`), edges labelled `spawns`/`yields`/`proves`. Click a node for its
 full payload.
+
+Light and dark themes (burgundy on white / burgundy on near-black), a toggle in the
+header, and the choice is remembered per browser. The sidebar and the open engagement
+refresh themselves every 3 s — no manual reload — and the poll pauses while you are
+typing in a field so a hint or a scope entry is never wiped.
 
 It is loopback-only: binding off `127.0.0.1` is refused unless
 `TITAN_CONSOLE_TOKEN` is set, and then every request needs `X-Titan-Token`.
