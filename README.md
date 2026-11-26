@@ -277,7 +277,10 @@ recorded in the activity trail with the reason, and `--rounds N` is still availa
 an explicit hard cap for a first cheap run.
 
 In the GUI the mode is a selector next to Start/Stop, and a pending approval shows as
-a burgundy banner with **Approve & continue** / **Stop here**.
+a burgundy banner with **Approve & continue** / **Stop here**. Changing the mode or the
+worker count while an engagement is running applies from the next round — no restart,
+no reload; switching from approval back to autonomous releases a paused round
+immediately.
 
 ## GUI
 
@@ -299,6 +302,10 @@ The graph tab draws both graphs' exploration side as an SVG: nodes laid out
 left-to-right by provenance, coloured by kind (`begin`, `goal`, `intent`, `fact`,
 `finding`, `hint`), edges labelled `spawns`/`yields`/`proves`. Click a node for its
 full payload.
+
+Dialogs are in-page (steer, rename, destructive confirmations) rather than browser
+prompts, and new facts and findings raise a notification in the top-right corner that
+links straight to the enumeration or findings tab.
 
 Light and dark themes (burgundy on white / burgundy on near-black), a toggle in the
 header, and the choice is remembered per browser. The sidebar and the open engagement

@@ -47,6 +47,8 @@ class Engine:
         self._live_task: dict[str, int] = {}
         self.approval_decision: dict[int, str] = {}
         self.approver = None          # optional callable(task_id, summary) -> bool
+        self.workers_override: dict[int, int] = {}
+        self.mode_override: dict[int, str] = {}
 
     # ------------------------------------------------------------------ llm config
     def llm_config(self) -> dict:
@@ -389,6 +391,20 @@ class Engine:
         return int(r["c"]) if r else 0
 
     # ------------------------------------------------------------------ approval gate
+    def set_runtime(self, task_id: int, workers: int | None = None,
+                    mode: str | None = None) -> dict:
+        """Change workers/mode for a run that is already going (or for the next one)."""
+        if workers:
+            self.workers_override[task_id] = max(1, min(int(workers), 8))
+        if mode:
+            mode = "approval" if mode == "approval" else "autonomous"
+            self.mode_override[task_id] = mode
+            self.store.set_task_mode(task_id, mode)
+            if mode == "autonomous" and self.store.pending_approval(task_id):
+                self.approve(task_id, "approve")     # release a paused run immediately
+        return {"workers": self.workers_override.get(task_id),
+                "mode": self.mode_override.get(task_id)}
+
     def approve(self, task_id: int, decision: str) -> bool:
         """Called by the console/CLI to release or deny a pending approval."""
         decision = "approve" if decision == "approve" else "deny"
@@ -459,6 +475,9 @@ class Engine:
         last_progress = (0, 0)
         rnd = 0
         while True:
+            # a change made in the console applies from the next round, without a restart
+            workers = max(1, min(int(self.workers_override.get(task_id, workers)), 8))
+            mode = self.mode_override.get(task_id, mode)
             if self.stop_requested(task_id):
                 self.emit("[engine] stop requested; finishing current work")
                 self.store.set_task_status(task_id, "stopped")

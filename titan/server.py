@@ -292,7 +292,10 @@ def serve(settings, task_id: int = 0) -> int:
                     return self._json({"error": f"no task {tid}"}, 404)
                 with lock:
                     if tid in running and running[tid].is_alive():
-                        return self._json({"error": "already running"}, 409)
+                        # already running: treat the request as a live settings change
+                        engine.set_runtime(tid, workers=int(body.get("workers") or 0) or None,
+                                           mode=str(body.get("mode") or "") or None)
+                        return self._json({"updated": tid, "running": True})
                     raw_rounds = body.get("rounds")
                     rounds = int(raw_rounds) if raw_rounds not in (None, "", 0) else None
                     workers = max(1, min(int(body.get("workers") or settings.max_workers), 8))
@@ -315,6 +318,15 @@ def serve(settings, task_id: int = 0) -> int:
                     return self._json({"error": "no task"}, 404)
                 engine.request_stop(tid)
                 return self._json({"stopping": tid})
+
+            if path == "/api/task/settings":
+                tid = int(body.get("task") or 0)
+                if not store.get_task(tid):
+                    return self._json({"error": f"no task {tid}"}, 404)
+                res = engine.set_runtime(tid,
+                                         workers=int(body["workers"]) if body.get("workers") else None,
+                                         mode=str(body["mode"]) if body.get("mode") else None)
+                return self._json({"task": tid, **res})
 
             if path == "/api/approve":
                 tid = int(body.get("task") or 0)

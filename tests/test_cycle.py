@@ -414,6 +414,50 @@ class CycleTest(unittest.TestCase):
         done = eng.store.recent_done(tid)[0]
         self.assertRegex(done["finished"], r"^\d{2}:\d{2}:\d{2}$")
 
+    def test_live_settings_release_and_apply(self):
+        import threading as th
+        import time as tm
+        eng = self.eng
+        eng.llm.script.extend([
+            Reply(content=json.dumps({"goals": ["go"], "constraints": []})),
+            Reply(content="", tool_calls=[_tc(1, "add_intent", {"intents": [
+                {"summary": f"r1 {self.target.url}"}]})]),
+            Reply(content="r1 dispatched"),
+            Reply(content="", tool_calls=[_tc(2, "record_fact", {
+                "summary": "f1", "source": "tool_output", "confidence": "observed"})]),
+            Reply(content="r1 done"),
+            Reply(content="", tool_calls=[_tc(3, "add_intent", {"intents": [
+                {"summary": f"r2 {self.target.url}"}]})]),
+            Reply(content="r2 dispatched"),
+            Reply(content="", tool_calls=[_tc(4, "record_fact", {
+                "summary": "f2", "source": "tool_output", "confidence": "observed"})]),
+            Reply(content="r2 done"),
+        ])
+        tid = eng.new_task("live settings", scope=[{"kind": "url", "value": self.target.url}],
+                           mode="approval")
+        out = {}
+        th.Thread(target=lambda: out.update(res=eng.run_task(tid, workers=1)), daemon=True).start()
+        for _ in range(120):
+            if eng.store.pending_approval(tid):
+                break
+            tm.sleep(0.05)
+        self.assertIsNotNone(eng.store.pending_approval(tid))
+
+        # switching to autonomous must release the paused run immediately
+        eng.set_runtime(tid, workers=2, mode="autonomous")
+        self.assertIsNone(eng.store.pending_approval(tid))
+        for _ in range(200):
+            if eng.store.get_task(tid)["round_no"] >= 2:
+                break
+            tm.sleep(0.05)
+        self.assertGreaterEqual(eng.store.get_task(tid)["round_no"], 2)
+        eng.request_stop(tid)
+        for _ in range(100):
+            if out.get("res"):
+                break
+            tm.sleep(0.05)
+        self.assertEqual(out["res"]["status"], "stopped")
+
     def test_delete_task_removes_derived_rows(self):
         eng = self.eng
         keep = eng.new_task("keep me", scope=[{"kind": "url", "value": self.target.url}])

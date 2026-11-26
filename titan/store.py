@@ -336,7 +336,13 @@ class Store:
         return self.one("SELECT * FROM explorations WHERE id=?", (task_id,))
 
     def list_tasks(self, limit: int = 50) -> list[sqlite3.Row]:
-        return self.q("SELECT * FROM explorations ORDER BY id DESC LIMIT ?", (limit,))
+        return self.q(
+            "SELECT e.*,"
+            " (SELECT COUNT(*) FROM findings f WHERE f.task_id=e.id"
+            "   AND f.status NOT IN ('false_positive','duplicate','ignored')) AS findings_total,"
+            " (SELECT COUNT(*) FROM exploration_nodes n WHERE n.exploration_id=e.id"
+            "   AND n.kind='fact' AND n.state<>'dismissed') AS facts_total"
+            " FROM explorations e ORDER BY e.id DESC LIMIT ?", (limit,))
 
     def set_task_status(self, task_id: int, status: str) -> None:
         self.x("UPDATE explorations SET status=?, updated_at=? WHERE id=?", (status, now(), task_id))

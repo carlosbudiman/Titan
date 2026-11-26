@@ -118,12 +118,24 @@ label.f span{display:block;color:var(--dim);font-size:12px;margin-bottom:.2rem}
 ::-webkit-scrollbar{width:10px;height:10px}
 ::-webkit-scrollbar-thumb{background:var(--line);border-radius:8px}
 ::-webkit-scrollbar-track{background:transparent}
-#toasts{position:fixed;right:1.1rem;bottom:1.1rem;display:flex;flex-direction:column;gap:.5rem;
-  z-index:50;max-width:26rem}
+#toasts{position:fixed;right:1rem;top:4.2rem;display:flex;flex-direction:column;gap:.5rem;
+  z-index:60;width:22rem;max-width:calc(100vw - 2rem)}
 .toast{background:var(--surface);border:1px solid var(--line);border-left:3px solid var(--brand);
-  border-radius:8px;padding:.6rem .8rem;box-shadow:var(--shadow);font-size:13px}
+  border-radius:10px;padding:.6rem .75rem;box-shadow:var(--shadow);font-size:13px;
+  animation:slide .18s ease-out;cursor:default}
+.toast.click{cursor:pointer}
+.toast.click:hover{background:var(--surface-2)}
+.toast .tt{font-weight:600;display:block;margin-bottom:.1rem}
+.toast .tb{color:var(--dim);font-size:12px;display:block;overflow-wrap:anywhere}
 .toast.err{border-left-color:var(--bad)}
 .toast.ok{border-left-color:var(--ok)}
+.toast.finding{border-left-color:var(--bad)}
+.toast.fact{border-left-color:var(--brand)}
+@keyframes slide{from{opacity:0;transform:translateY(-4px)}to{opacity:1;transform:none}}
+.overlay{position:fixed;inset:0;background:rgba(20,10,12,.45);display:grid;place-items:center;
+  z-index:80;padding:1rem}
+.modal{width:min(34rem,100%);animation:pop .14s ease-out}
+@keyframes pop{from{opacity:0;transform:scale(.98)}to{opacity:1;transform:none}}
 @media(max-width:900px){main{grid-template-columns:1fr}aside{border-right:0;
   border-bottom:1px solid var(--line)}section{padding:1rem}.grid2{grid-template-columns:1fr}}
 </style></head>
@@ -144,6 +156,7 @@ label.f span{display:block;color:var(--dim);font-size:12px;margin-bottom:.2rem}
   <section id="main"><div class="empty">Select an engagement, or create one.</div></section>
 </main>
 <div id="toasts"></div>
+<div id="modalHost"></div>
 <script>
 const $ = s => document.querySelector(s);
 const esc = s => String(s === null || s === undefined ? '' : s)
@@ -151,16 +164,70 @@ const esc = s => String(s === null || s === undefined ? '' : s)
 let S = {tasks: [], task: 0, data: null, tab: 'overview', view: 'task',
          agents: null, settings: null, skills: null, traffic: null,
          graph: null, nodeSel: 0, models: [], trafficQ: '', lastSig: ''};
+let SEEN = null;   // taskId -> [facts, findings] for notification diffs
 
 const VIEWS = [['task','Engagement'],['agents','Agents'],['settings','Settings'],
                ['skills','Skills'],['traffic','Traffic']];
+
+function notify(title, body, kind, onClick) {
+  const box = $('#toasts');
+  const el = document.createElement('div');
+  el.className = 'toast ' + (kind || '') + (onClick ? ' click' : '');
+  el.innerHTML = `<span class="tt">${esc(title)}</span>${body ? `<span class="tb">${esc(body)}</span>` : ''}`;
+  if (onClick) el.onclick = () => { el.remove(); onClick(); };
+  box.prepend(el);
+  while (box.children.length > 5) box.lastChild.remove();
+  if (!onClick) setTimeout(() => el.remove(), 5000);
+  else setTimeout(() => el.remove(), 12000);
+}
 
 function toast(msg, kind) {
   const el = document.createElement('div');
   el.className = 'toast ' + (kind || '');
   el.textContent = msg;
-  $('#toasts').appendChild(el);
+  $('#toasts').prepend(el);
+  while ($('#toasts').children.length > 5) $('#toasts').lastChild.remove();
   setTimeout(() => el.remove(), 4200);
+}
+
+function modal(opts) {
+  return new Promise(resolve => {
+    const host = $('#modalHost');
+    const fields = (opts.fields || []).map(f => `
+      <label class="f"><span>${esc(f.label)}</span>
+        ${f.type === 'textarea'
+          ? `<textarea id="m_${f.id}" rows="3">${esc(f.value || '')}</textarea>`
+          : `<input id="m_${f.id}" value="${esc(f.value || '')}" placeholder="${esc(f.placeholder || '')}">`}
+      </label>`).join('');
+    host.innerHTML = `<div class="overlay" data-overlay>
+      <div class="modal card" role="dialog" aria-modal="true">
+        <h2 style="margin:0 0 .3rem">${esc(opts.title)}</h2>
+        ${opts.message ? `<div class="muted" style="margin-bottom:.7rem">${esc(opts.message)}</div>` : ''}
+        ${fields}
+        <div class="row" style="justify-content:flex-end;margin-top:1.1rem">
+          <button class="ghost" id="mCancel">${esc(opts.cancel || 'Cancel')}</button>
+          <button class="${opts.danger ? 'danger' : 'pri'}" id="mOk">${esc(opts.ok || 'Save')}</button>
+        </div>
+      </div></div>`;
+    const close = v => { host.innerHTML = ''; document.removeEventListener('keydown', key); resolve(v); };
+    const submit = () => {
+      const vals = {};
+      (opts.fields || []).forEach(f => { const el = $('#m_' + f.id); vals[f.id] = el ? el.value.trim() : ''; });
+      close(vals);
+    };
+    const key = e => {
+      if (e.key === 'Escape') close(null);
+      if (e.key === 'Enter' && e.target.tagName !== 'TEXTAREA') { e.preventDefault(); submit(); }
+    };
+    host.querySelector('[data-overlay]').addEventListener('mousedown', e => {
+      if (e.target.dataset.overlay !== undefined) close(null);
+    });
+    $('#mOk').onclick = submit;
+    $('#mCancel').onclick = () => close(null);
+    document.addEventListener('keydown', key);
+    const first = host.querySelector('input, textarea');
+    if (first) { first.focus(); first.select && first.select(); }
+  });
 }
 
 async function api(path, body) {
@@ -199,6 +266,7 @@ async function loadTasks() {
   const j = await api('/api/tasks');
   if (j.error) return;
   S.tasks = j.tasks || [];
+  diffTaskCounts();
   const el = $('#tasks');
   if (!el) return;
   el.innerHTML = S.tasks.map(t => `
@@ -208,6 +276,29 @@ async function loadTasks() {
       <span class="t">${esc(t.title || t.goal)}</span>
       <span class="m">#${t.id} · <span class="s-${esc(t.status)}">${esc(t.status)}</span> · ${t.round_no} round${t.round_no === 1 ? '' : 's'}</span>
     </div>`).join('') || '<div class="empty">No engagements yet</div>';
+}
+
+function diffTaskCounts() {
+  const counts = t => [t.facts_total || 0, t.findings_total || 0];
+  if (!SEEN) {
+    SEEN = {};
+    S.tasks.forEach(t => { SEEN[t.id] = counts(t); });
+    return;
+  }
+  S.tasks.forEach(t => {
+    const [fa, fi] = counts(t);
+    const prev = SEEN[t.id];
+    if (prev && t.id !== S.task) {
+      const title = (t.title || t.goal || '').slice(0, 90);
+      if (fi > prev[1]) {
+        notify('New finding — engagement #' + t.id, title, 'finding', () => selectTask(t.id));
+      } else if (fa > prev[0]) {
+        notify('New observations — #' + t.id, (fa - prev[0]) + ' added · ' + title, 'fact',
+               () => selectTask(t.id));
+      }
+    }
+    SEEN[t.id] = [fa, fi];
+  });
 }
 
 async function selectTask(id) {
@@ -228,6 +319,21 @@ async function refresh(force) {
   }
   const prev = S.data;
   S.data = j;
+  if (prev) {
+    const newFindings = j.overview.findings_total - prev.overview.findings_total;
+    const newFacts = j.overview.facts_total - prev.overview.facts_total;
+    if (newFindings > 0) {
+      const f = (j.findings || [])[0];
+      notify(newFindings === 1 ? 'New finding' : newFindings + ' new findings',
+             f ? (f.vulnclass + ' — ' + f.summary) : '', 'finding',
+             () => { S.tab = 'findings'; render(); });
+    }
+    if (newFacts > 0) {
+      const f = (j.overview.recent_facts || [])[0];
+      notify(newFacts === 1 ? 'New observation' : newFacts + ' new observations',
+             f ? f.summary : '', 'fact', () => { S.tab = 'enumeration'; render(); });
+    }
+  }
   const sig = [j.task.status, j.overview.round, j.overview.facts_total,
                (j.enumeration && j.enumeration.counts ? j.enumeration.counts.observations : 0),
                (j.enumeration && j.enumeration.counts ? j.enumeration.counts.services : 0),
@@ -270,11 +376,12 @@ function render() {
     </div>
     <div class="row" style="margin:1rem 0">
       <label class="hint">Mode
-        <select id="rMode" style="width:auto">
+        <select id="rMode" style="width:auto" onchange="void applyRuntime()">
           <option value="autonomous" ${(d.mode || 'autonomous') === 'autonomous' ? 'selected' : ''}>Autonomous — run until the goal is met or you stop it</option>
           <option value="approval" ${d.mode === 'approval' ? 'selected' : ''}>Approval — confirm before each round</option>
         </select></label>
-      <label class="hint">Workers <input id="rWorkers" style="width:4.5rem" value="2"></label>
+      <label class="hint">Workers <input id="rWorkers" style="width:4.5rem" value="2"
+        onchange="void applyRuntime()"></label>
       <button class="pri" onclick="runTask()" ${d.running ? 'disabled' : ''}>${d.running ? 'Running…' : 'Start'}</button>
       <button onclick="stopTask()" ${(d.running || d.approval) ? '' : 'disabled'}>Stop</button>
       <button onclick="exportMd()">Export report</button>
@@ -812,12 +919,16 @@ async function createTask() {
 }
 
 async function delTask(id) {
-  if (!confirm('Delete engagement #' + id + '?\n\n' +
-               'This removes its goals, intents, facts, findings and recorded traffic. ' +
-               'It cannot be undone.')) return;
+  const v = await modal({
+    title: 'Delete engagement #' + id + '?',
+    message: 'This removes its goals, intents, facts, findings and recorded traffic. ' +
+             'Artifacts already written to disk are left alone. This cannot be undone.',
+    ok: 'Delete permanently', danger: true});
+  if (!v) return;
   const j = await api('/api/task/delete', {task: id});
   if (j.error) { toast(j.error, 'err'); return; }
   toast('Engagement #' + id + ' deleted', 'ok');
+  if (SEEN) delete SEEN[id];
   if (S.task === id) { S.task = 0; S.data = null; }
   await loadTasks();
   if (S.tasks.length) await selectTask(S.tasks[0].id);
@@ -829,9 +940,10 @@ async function delTask(id) {
 
 async function renameTask() {
   const cur = S.data ? (S.data.task.title || '') : '';
-  const title = prompt('Engagement title', cur);
-  if (title === null) return;
-  const j = await api('/api/task/rename', {task: S.task, title: title.trim()});
+  const v = await modal({title: 'Rename engagement', ok: 'Save',
+                         fields: [{id: 'title', label: 'Title', value: cur}]});
+  if (!v) return;
+  const j = await api('/api/task/rename', {task: S.task, title: v.title});
   if (j.error) { toast(j.error, 'err'); return; }
   toast('Renamed', 'ok');
   await loadTasks(); await refresh(true);
@@ -845,6 +957,19 @@ async function runTask() {
   toast(mode === 'approval' ? 'Started in approval mode — you will be asked each round'
                             : 'Running autonomously — press Stop to end it', 'ok');
   await refresh(true);
+}
+
+async function applyRuntime() {
+  if (!S.task || !$('#rMode')) return;
+  const mode = $('#rMode').value;
+  const workers = parseInt($('#rWorkers').value || '2', 10);
+  const j = await api('/api/task/settings', {task: S.task, workers: workers, mode: mode});
+  if (j.error) { toast(j.error, 'err'); return; }
+  const live = S.data && (S.data.running || S.data.approval);
+  toast(mode === 'approval' ? 'Approval mode · ' + workers + ' worker(s)'
+                            : 'Autonomous · ' + workers + ' worker(s)'
+        , 'ok');
+  if (live) notify('Settings applied live', mode + ' · ' + workers + ' worker(s) — takes effect from the next round', 'ok');
 }
 
 async function decide(decision) {
@@ -881,15 +1006,25 @@ async function addHint() {
 }
 
 async function steer(id) {
-  const msg = prompt('Course correction for intent #' + id); if (!msg) return;
-  const j = await api('/api/steer', {task: S.task, intent: id, message: msg});
-  if (j.error) toast(j.error, 'err'); else toast('Sent to worker ' + id, 'ok');
+  const v = await modal({
+    title: 'Steer intent #' + id,
+    message: 'The worker reads this before its next step. It keeps its intent, you just redirect it.',
+    fields: [{id: 'msg', label: 'Course correction', type: 'textarea',
+              placeholder: 'e.g. stop path brute force, go deeper on /exhibitor/v1/state'}],
+    ok: 'Send to worker'});
+  if (!v || !v.msg) return;
+  const j = await api('/api/steer', {task: S.task, intent: id, message: v.msg});
+  if (j.error) toast(j.error, 'err'); else toast('Sent to worker #' + id, 'ok');
 }
 
 async function kill(id) {
-  if (!confirm('Stop intent #' + id + '?')) return;
+  const v = await modal({
+    title: 'Stop intent #' + id + '?',
+    message: 'The worker finishes the step it is on, writes back what it has, then stops.',
+    ok: 'Stop intent', danger: true});
+  if (!v) return;
   const j = await api('/api/kill', {task: S.task, intent: id, reason: 'operator'});
-  if (j.error) toast(j.error, 'err'); else toast('Intent ' + id + ' stopping', 'ok');
+  if (j.error) toast(j.error, 'err'); else toast('Intent #' + id + ' stopping', 'ok');
 }
 
 async function setFinding(id, status) {
