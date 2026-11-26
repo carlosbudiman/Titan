@@ -292,20 +292,23 @@ One process, no build step, no JavaScript dependencies, no external assets.
 
 | View | What it does |
 |---|---|
-| **task** | per-task detail: overview (goals, constraints, **authorized scope with add form**, hints, queue), run/stop with rounds + workers, steer or kill a running intent, findings with severity/status editing and evidence, assets, traffic, activity, graph |
-| **agents** | live planner and worker cards: state (`thinking`/`tool`/`idle`/`stale`), current tool call, elapsed time, turn count, per-agent tokens; token usage table; recent step trail. Fed from `agent_state`, so runs started from the CLI are visible here too |
-| **settings** | model endpoint, model picker with **list models**, API key (write-only, masked), timeout/max tokens/temperature, pacing (rps, workers, noise profile), **test connection** with latency |
-| **skills** | all 11 skills with descriptions; click to read the full `SKILL.md` |
-| **traffic** | search recorded HTTP traffic by URL/body, inspect request headers and response body |
+| **Overview** | intent timeline (one lane per worker, bar = wall-clock duration, click to open), goals, constraints, queue with steer/stop, operator notes, scope editor, live agents, untested assets |
+| **Findings** | severity and status filters, inline detail with evidence and reproduction, status workflow (open/confirmed/FP/duplicate/ignored), **copy as markdown** per finding or all, **report preview** |
+| **Enumeration** | hosts → services → paths → observations, evidence-tagged, with a collapsible raw-observation list |
+| **Evidence** | every recorded request/response, searchable, with request and response headers side by side |
+| **Activity** | the trace: time, Δ since the previous event, worker, kind, detail; filter by worker or kind |
+| **Graph** | both graphs' exploration side as SVG; nodes by provenance, edge labels, click for the payload |
 
-The graph tab draws both graphs' exploration side as an SVG: nodes laid out
-left-to-right by provenance, coloured by kind (`begin`, `goal`, `intent`, `fact`,
-`finding`, `hint`), edges labelled `spawns`/`yields`/`proves`. Click a node for its
-full payload.
+Global views live in the header menu: **Settings** (model, key, pacing, test
+connection) and **Skills** (all 11 with full `SKILL.md`).
 
-Dialogs are in-page (steer, rename, destructive confirmations) rather than browser
-prompts, and new facts and findings raise a notification in the top-right corner that
-links straight to the enumeration or findings tab.
+`Report` opens a client-facing page — goals, scope, findings with severity and
+evidence, and what was enumerated, with internal intents, traces and reasoning left
+out. It prints cleanly to PDF from the browser.
+
+A density toggle (compact / comfortable) is in the header menu and is remembered per
+browser. Keyboard: `g` then `o/f/e/v/a/r` for the tabs, `/` to focus the filter,
+`?` for the list, `esc` to close.
 
 Light and dark themes (burgundy on white / burgundy on near-black), a toggle in the
 header, and the choice is remembered per browser. The sidebar and the open engagement

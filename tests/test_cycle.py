@@ -414,6 +414,22 @@ class CycleTest(unittest.TestCase):
         done = eng.store.recent_done(tid)[0]
         self.assertRegex(done["finished"], r"^\d{2}:\d{2}:\d{2}$")
 
+    def test_scope_values_are_normalised(self):
+        from titan.store import Store
+        cases = [
+            ("domain", "ip:192.168.168.98", ("ip", "192.168.168.98")),
+            ("domain", "10.0.0.0/24", ("cidr", "10.0.0.0/24")),
+            ("domain", "https://app.example.com", ("url", "https://app.example.com")),
+            ("domain", "example.com", ("domain", "example.com")),
+            ("", "10.1.1.1", ("ip", "10.1.1.1")),
+        ]
+        for kind, value, want in cases:
+            self.assertEqual(Store.normalise_scope(kind, value), want, f"{kind}:{value}")
+        tid = self.eng.new_task("scope normalisation")
+        self.eng.store.add_scope(tid, "domain", "ip:10.9.9.9", "operator")
+        scope = self.eng.store.scope(tid)
+        self.assertIn({"kind": "ip", "value": "10.9.9.9", "reason": "operator"}, scope)
+
     def test_live_settings_release_and_apply(self):
         import threading as th
         import time as tm

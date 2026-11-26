@@ -418,8 +418,44 @@ class Store:
         row = self.one("SELECT round_no FROM explorations WHERE id=?", (task_id,))
         return int(row["round_no"]) if row else 0
 
+    SCOPE_KINDS = ("domain", "ip", "cidr", "url", "keyword")
+
+    @classmethod
+    def normalise_scope(cls, kind: str, value: str) -> tuple[str, str]:
+        """Accept 'ip:1.2.3.4', 'kind=value' leftovers and bare values.
+
+        The guard matches on (kind, value), so a value stored with its prefix still
+        attached ("ip:192.168.168.98" under kind=domain) silently refuses everything.
+        """
+        import ipaddress
+
+        kind = (kind or "").strip().lower()
+        value = (value or "").strip()
+        if ":" in value:
+            pre, rest = value.split(":", 1)
+            pre = pre.strip().lower()
+            if pre in cls.SCOPE_KINDS and rest.strip():
+                kind, value = pre, rest.strip()
+        if kind not in cls.SCOPE_KINDS or kind == "domain":
+            # "domain" is the form default; a bare IP/CIDR/URL is not a domain name.
+            low = value.lower()
+            if low.startswith("http://") or low.startswith("https://"):
+                kind = "url"
+            else:
+                try:
+                    if "/" in low:
+                        ipaddress.ip_network(low, strict=False)
+                        kind = "cidr"
+                    else:
+                        ipaddress.ip_address(low)
+                        kind = "ip"
+                except ValueError:
+                    kind = "domain"
+        return kind, value
+
     def add_scope(self, task_id: int, kind: str, value: str, reason: str = "") -> None:
-        if not kind or not value:
+        kind, value = self.normalise_scope(kind, value)
+        if not (task_id and kind and value):
             return
         with self.lock:
             self.db.execute(
@@ -428,7 +464,11 @@ class Store:
             self.db.commit()
 
     def scope(self, task_id: int) -> list[dict]:
-        return [dict(r) for r in self.q("SELECT kind,value,reason FROM task_scope WHERE task_id=?", (task_id,))]
+        out = []
+        for r in self.q("SELECT kind,value,reason FROM task_scope WHERE task_id=?", (task_id,)):
+            kind, value = self.normalise_scope(r["kind"], r["value"])
+            out.append({"kind": kind, "value": value, "reason": r["reason"]})
+        return out
 
     def add_constraint(self, task_id: int, kind: str, text: str, origin: str = "planner") -> None:
         self.x("INSERT INTO task_constraints(task_id,kind,text,origin,created_at) VALUES(?,?,?,?,?)",
@@ -1000,6 +1040,34 @@ class Store:
                        "confidence": jloads(f["payload"], {}).get("confidence", ""),
                        "at": f["created_at"]} for f in facts],
         }
+
+    # ---------------------------------------------------------------- views
+    def timeline(self, task_id: int, limit: int = 400) -> list[dict]:
+        """Every intent with start/finish/duration, for the Gantt strip."""
+        out = []
+        for r in self.q("SELECT id,state,payload,created_at,completed_at,owner,priority"
+                        " FROM exploration_nodes WHERE exploration_id=? AND kind='intent'"
+                        " ORDER BY id LIMIT ?", (task_id, limit)):
+            p = jloads(r["payload"], {})
+            finished = r["completed_at"]
+            out.append({
+                "id": r["id"], "state": r["state"], "summary": p.get("summary", ""),
+                "started_at": r["created_at"], "finished_at": finished,
+                "started": local_hms(r["created_at"]), "finished": local_hms(finished),
+                "took_s": seconds_between(r["created_at"], finished or now()),
+                "worker": r["owner"] or "",
+            })
+        return out
+
+    def coverage_detail(self, task_id: int) -> dict:
+        total = self.q("SELECT id,type,url,domain,ip FROM assets WHERE task_ids LIKE ?",
+                       (f"%{task_id}%",))
+        tested = {r["asset_id"] for r in self.q(
+            "SELECT asset_id FROM task_coverage WHERE task_id=?", (task_id,))}
+        untested = [dict(r) for r in total if r["id"] not in tested]
+        return {"assets": len(total), "tested": len(tested),
+                "pct": round(100.0 * len(tested) / len(total), 1) if total else 0.0,
+                "untested": untested[:80]}
 
     # ---------------------------------------------------------------- settings
     def get_setting(self, key: str, default: str = "") -> str:

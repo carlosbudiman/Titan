@@ -8,6 +8,7 @@ matching X-Titan-Token header.
 from __future__ import annotations
 
 import json
+import os
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -121,12 +122,18 @@ def serve(settings, task_id: int = 0) -> int:
                     return self._json({"error": f"no task {tid}"}, 404)
                 with lock:
                     is_running = tid in running and running[tid].is_alive()
+                task = dict(store.get_task(tid))
+                ov = store.graph_overview(tid)
                 return self._json({
-                    "task": dict(store.get_task(tid)),
-                    "mode": (store.get_task(tid)["mode"] or "autonomous"),
+                    "task": task,
+                    "mode": (task["mode"] or "autonomous"),
+                    "workers": int(os.environ.get("TITAN_MAX_WORKERS", "2") or 2),
+                    "workdir": ov.get("workdir", ""),
                     "approval": store.pending_approval(tid),
-                    "overview": store.graph_overview(tid),
+                    "overview": ov,
                     "enumeration": store.enumeration(tid),
+                    "timeline": store.timeline(tid),
+                    "coverage": store.coverage_detail(tid),
                     "findings": store.findings(tid),
                     "assets": store.assets(tid, limit=200),
                     "activity": store.activity(tid, 60),
@@ -184,6 +191,18 @@ def serve(settings, task_id: int = 0) -> int:
                     return self._json({"models": list_models(url, key)})
                 except LLMError as e:
                     return self._json({"error": str(e)}, 400)
+
+            if path == "/api/report":
+                tid = int((q.get("task") or [0])[0] or 0)
+                if not store.get_task(tid):
+                    return self._json({"error": "no task"}, 404)
+                html = _report_html(store, tid).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.send_header("Content-Length", str(len(html)))
+                self.end_headers()
+                self.wfile.write(html)
+                return
 
             if path == "/api/export":
                 tid = int((q.get("task") or [0])[0] or 0)
@@ -398,6 +417,108 @@ def serve(settings, task_id: int = 0) -> int:
         srv.server_close()
     return 0
 
+
+
+def _report_html(store: Store, task_id: int) -> str:
+    """Client-facing view: findings + what was enumerated. No intents, no traces."""
+    import html as _h
+
+    e = lambda x: _h.escape(str(x if x is not None else ""))
+    t = store.get_task(task_id)
+    ov = store.graph_overview(task_id)
+    en = store.enumeration(task_id)
+    findings = store.findings(task_id)
+    sev_order = {"critical": 0, "high": 1, "medium": 2, "low": 3, "info": 4}
+    findings = sorted(findings, key=lambda f: (sev_order.get(f["severity"], 9), f["id"]))
+    from .store import local_hms
+    stamp = local_hms(store.one("SELECT created_at FROM explorations WHERE id=?",
+                                (task_id,))["created_at"], with_date=True)
+
+    f_html = []
+    for i, f in enumerate(findings, 1):
+        refs = f.get("traffic_refs") or []
+        f_html.append(f"""
+        <section class="finding">
+          <h2><span class="sev sev-{e(f['severity'])}">{e(f['severity'])}</span>
+              {i}. {e(f['vulnclass'])}</h2>
+          <table class="kv">
+            <tr><th>Asset</th><td>{e(f.get('endpoint') or '—')}</td></tr>
+            <tr><th>Parameter</th><td>{e(f.get('parameter') or '—')}</td></tr>
+            <tr><th>Status</th><td>{e(f.get('status'))}</td></tr>
+            <tr><th>Confidence</th><td>{e(f.get('confidence'))} ({e(f.get('proof_basis'))})</td></tr>
+            <tr><th>Evidence refs</th><td>{e(', '.join(str(r) for r in refs) or '—')}</td></tr>
+          </table>
+          <p>{e(f['summary'])}</p>
+          <h3>Evidence</h3><pre>{e((f.get('evidence') or '').strip())}</pre>
+          {f"<h3>Reproduction</h3><pre>{e(f['poc'].strip())}</pre>" if f.get('poc') else ''}
+          {f"<h3>Considered and excluded</h3><p>{e(f['counterevidence'])}</p>" if f.get('counterevidence') else ''}
+        </section>""")
+
+    host_html = []
+    for h in en["hosts"]:
+        svc = "".join(
+            f"<li><code>{e(s['url'])}</code>"
+            + (f" <span class='tag'>{e(s['status'])}</span>" if s.get("status") else "")
+            + (f" <span class='muted'>{e(s['title'])}</span>" if s.get("title") else "")
+            + (f"<div class='muted'>technologies: {e(', '.join(s['tech']))}</div>" if s.get("tech") else "")
+            + (f"<div class='muted'>paths: "
+               + " ".join(f"<code>{e(x['url'])}</code>" for x in s.get("endpoints", [])[:40])
+               + "</div>" if s.get("endpoints") else "")
+            + "</li>" for s in h["services"])
+        obs = "".join(
+            f"<li>{e(o['summary'])}"
+            + (f"<div class='muted'>{e(o['detail'])}</div>" if o.get("detail") else "")
+            + f"<div class='muted small'>{e(o.get('source'))} · {e(o.get('confidence'))}</div></li>"
+            for o in h["observations"] if o.get("confidence") == "observed")
+        if not (svc or obs):
+            continue
+        host_html.append(f"""<section class="host">
+          <h3>{e(h['key'] if h['key'] != '(unattached)' else 'General')}</h3>
+          {f"<ul class='services'>{svc}</ul>" if svc else ""}
+          {f"<ul class='obs'>{obs}</ul>" if obs else ""}
+        </section>""")
+
+    goals = "".join(f"<li>{e(g['text'])} <span class='muted'>({e(g['state'])})</span></li>"
+                    for g in ov["goals"])
+    scope = "".join(f"<li><code>{e(s['value'])}</code> <span class='muted'>{e(s['kind'])}</span></li>"
+                    for s in ov["scope"])
+
+    return f"""<!doctype html><html><head><meta charset="utf-8">
+<title>Report — {e(t['title'] or t['goal'])}</title>
+<style>
+ body{{font:13px/1.6 -apple-system,"Segoe UI",Roboto,Arial,sans-serif;color:#1d1618;
+   max-width:52rem;margin:2.4rem auto;padding:0 1.2rem;background:#fff}}
+ h1{{font-size:1.5rem;margin:0 0 .2rem}} h2{{font-size:1.05rem;margin:1.6rem 0 .4rem}}
+ h3{{font-size:.82rem;text-transform:uppercase;letter-spacing:.05em;color:#665558;margin:1rem 0 .3rem}}
+ .meta{{color:#665558;margin-bottom:1.4rem}} .muted{{color:#665558}} .small{{font-size:11px}}
+ table.kv{{border-collapse:collapse;width:100%;margin:.4rem 0 .8rem}}
+ table.kv th{{text-align:left;width:9rem;font-weight:600;color:#665558;vertical-align:top;
+   padding:.15rem .5rem .15rem 0}} table.kv td{{padding:.15rem 0}}
+ pre{{background:#f7f4f4;border:1px solid #e7dedd;border-radius:6px;padding:.6rem;
+   white-space:pre-wrap;word-break:break-word;font-size:11.5px}}
+ .sev{{display:inline-block;padding:.05rem .45rem;border-radius:999px;font-size:10.5px;
+   text-transform:uppercase;letter-spacing:.06em;color:#fff;margin-right:.4rem}}
+ .sev-critical{{background:#7f1d1d}} .sev-high{{background:#a5342f}} .sev-medium{{background:#9a7412}}
+ .sev-low{{background:#3f6b52}} .sev-info{{background:#5b5f66}}
+ .tag{{display:inline-block;border:1px solid #e7dedd;border-radius:999px;padding:0 .4rem;font-size:10.5px}}
+ .finding{{border-top:2px solid #7d2030;padding-top:.2rem;page-break-inside:avoid}}
+ .host{{page-break-inside:avoid}} ul.services,ul.obs{{margin:.2rem 0 .8rem 1.1rem;padding:0}}
+ .scope{{columns:2}} footer{{margin-top:3rem;border-top:1px solid #e7dedd;padding-top:.6rem;
+   color:#665558;font-size:11px}}
+ @media print{{body{{margin:0;max-width:none}} .finding{{page-break-inside:avoid}}}}
+</style></head><body>
+<h1>{e(t['title'] or 'Engagement report')}</h1>
+<div class="meta">Engagement #{task_id} · generated {e(stamp)} · status {e(t['status'])}</div>
+<h3>Objective</h3><p>{e(t['goal'])}</p>
+<h3>Goals</h3><ul>{goals or '<li>none</li>'}</ul>
+<h3>Authorized scope</h3><ul class="scope">{scope or '<li>none</li>'}</ul>
+<h3>Findings ({len(findings)})</h3>
+{''.join(f_html) or '<p class="muted">No confirmed findings.</p>'}
+<h3>What was enumerated</h3>
+{''.join(host_html) or '<p class="muted">No enumeration recorded.</p>'}
+<footer>Generated by Dewaguard Titan · evidence references correspond to stored HTTP
+requests. Internal reasoning, intents and worker traces are intentionally omitted.</footer>
+</body></html>"""
 
 def _report(store: Store, task_id: int) -> str:
     t = store.get_task(task_id)
