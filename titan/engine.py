@@ -248,7 +248,15 @@ class Engine:
 
             n = self.store.bump_round(task_id)
             self.emit(f"[round {n}] planning")
-            final, added = self.plan_round(task_id)
+            try:
+                final, added = self.plan_round(task_id)
+            except Exception as e:  # noqa: BLE001 - a dead endpoint must not traceback
+                self.emit(f"[engine] planner failed: {type(e).__name__}: {e}")
+                self.emit("[engine] check TITAN_LLM_BASE_URL / TITAN_LLM_MODEL / "
+                          "TITAN_LLM_API_KEY with: titan doctor")
+                self.store.log(task_id, "engine", "error", f"planner: {e}"[:2000])
+                self.store.set_task_status(task_id, "stopped")
+                break
             if final:
                 self.emit("  planner: " + final.strip().replace("\n", " ")[:400])
             if self.store.goal_met(task_id):

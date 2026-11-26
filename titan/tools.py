@@ -333,6 +333,42 @@ def t_webfetch(c: Ctx, url: str, method: str = "GET", headers: dict | None = Non
 ASSET_TYPES = ("root_domain", "ip", "subdomain", "app", "service", "endpoint")
 
 
+def _norm_asset(a: dict) -> dict:
+    """Accept the shortcuts models actually write (value/host/target) and fill the
+    derived fields (root_domain, service_type) the graph queries rely on."""
+    out = dict(a)
+    v = out.get("value") or out.get("target") or out.get("host") or out.get("key")
+    t = out.get("type")
+    if v:
+        v = str(v).strip()
+        if t == "ip" and not out.get("ip"):
+            out["ip"] = v
+        elif t in ("domain", "root_domain", "subdomain") and not out.get("domain"):
+            out["domain"] = v
+        elif t == "app" and not out.get("app_name"):
+            out["app_name"] = v
+        elif t in ("service", "endpoint") and not out.get("url"):
+            out["url"] = v if "://" in v else "http://" + v
+    url = out.get("url")
+    if url and "://" not in str(url):
+        out["url"] = "http://" + str(url)
+    if out.get("url"):
+        from urllib.parse import urlparse
+        try:
+            host = urlparse(out["url"]).hostname or ""
+        except ValueError:
+            host = ""
+        if host and not out.get("domain"):
+            out["domain"] = host
+        if t == "service" and not out.get("service_type"):
+            out["service_type"] = "http"
+    dom = out.get("domain")
+    if dom and not out.get("root_domain"):
+        parts = str(dom).split(".")
+        out["root_domain"] = ".".join(parts[-2:]) if len(parts) >= 2 else str(dom)
+    return out
+
+
 def t_insert_assets(c: Ctx, items: list[dict]) -> str:
     if not isinstance(items, list):
         return "ERROR: items must be a list"
@@ -340,11 +376,17 @@ def t_insert_assets(c: Ctx, items: list[dict]) -> str:
     for a in items[:60]:
         if not isinstance(a, dict):
             continue
+        a = _norm_asset(a)
         if a.get("type") not in ASSET_TYPES:
-            out.append({"error": f"invalid type {a.get('type')!r}", "item": a})
+            out.append({"error": f"invalid type {a.get('type')!r} (expected one of "
+                                 f"{', '.join(ASSET_TYPES)})", "item": a})
             continue
         aid = c.store.add_asset(c.task_id, a)
-        if aid and c.node_id:
+        if not aid:
+            out.append({"error": "missing identifier for type " + str(a.get("type")),
+                        "item": a})
+            continue
+        if c.node_id:
             c.store.anchor(c.node_id, aid)
         out.append({"id": aid, "type": a.get("type"),
                     "key": a.get("url") or a.get("domain") or a.get("ip") or a.get("app_name")})
