@@ -215,6 +215,27 @@ class CycleTest(unittest.TestCase):
         self.assertEqual(eng.store.findings(tid), [])
 
 
+    def test_final_judgement_closes_a_goal_from_existing_evidence(self):
+        eng = self.eng
+        tid = eng.new_task("judge gate", scope=[{"kind": "url", "value": self.target.url}])
+        fact = eng.store.add_fact(tid, "root returned 200", source="tool_output",
+                                  confidence="observed", evidence="GET / -> 200")
+        goal_id = eng.store.goals(tid)[0]["id"]
+        eng.llm.script.extend([
+            Reply(content="", tool_calls=[_tc(9, "prove_goal", {
+                "goal_id": goal_id, "evidence_id": fact, "reason": "observed tool output"})]),
+            Reply(content="goal met from existing evidence"),
+        ])
+        verdict = eng.final_judgement(tid)
+        self.assertIn("goal met", verdict.lower())
+        self.assertEqual(eng.store.goals(tid)[0]["state"], "met")
+        self.assertEqual(eng.store.get_task(tid)["status"], "achieved")
+        # this pass must not be able to dispatch work
+        names = {t["function"]["name"] for t in
+                 eng.registry.specs("planner") if t["function"]["name"] in eng.JUDGE_ONLY}
+        self.assertNotIn("add_intent", names)
+
+
 def _ctx(eng, tid):
     from titan.guard import Guard, Scope
     from titan.tools import Ctx

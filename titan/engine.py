@@ -243,6 +243,46 @@ class Engine:
         after = self.store.pending_intents(task_id)
         return final, max(0, after - before)
 
+    # ------------------------------------------------------------------ final judgement
+    JUDGE_ONLY = ["graph_overview", "list_goals", "list_facts", "list_findings",
+                  "node_detail", "prove_goal"]
+
+    def final_judgement(self, task_id: int) -> str:
+        """One last planner pass with no dispatch tools, so a run whose budget ended
+        can still close the goals its evidence already proves."""
+        task = self.store.get_task(task_id)
+        ov = self.store.graph_overview(task_id)
+        if not task or (ov["facts_total"] == 0 and ov["findings_total"] == 0):
+            return ""
+        scope = Scope(self.store.scope(task_id))
+        guard = Guard(self.store, self.settings, task_id, "planner", scope)
+        ctx = Ctx(self.store, self.settings, task_id, "planner", "planner",
+                  self.settings.run_dir(task_id), guard, self.pacer, self)
+        ctx.skills = self.skills
+        system = (render(PLANNER_PROMPT, goal=task["goal"],
+                         constraints=constraints_block(self.store, task_id))
+                  + "\n\nFINAL JUDGEMENT PASS. The round budget is exhausted and no worker is "
+                    "running. add_intent is NOT available. Judge every goal strictly on the "
+                    "evidence already in the graph: call prove_goal(goal_id, evidence_id, reason) "
+                    "for each goal whose evidence exists (a fact with source=tool_output, or a "
+                    "finding with bound traffic). If a goal is genuinely unmet, reply with one "
+                    "sentence naming what is missing and leave it open.")
+        self.live_update("planner", role="planner", task=task_id, state="judging",
+                         tool=None, note="final judgement pass",
+                         model=getattr(self.llm, "name", ""))
+        try:
+            final = run_loop(self.llm, self.registry, "planner", system,
+                             "SITUATION (graph_overview):\n"
+                             + json.dumps(ov, ensure_ascii=False, indent=1),
+                             ctx, guard, max(2, self.settings.planner_turns // 2),
+                             only=self.JUDGE_ONLY,
+                             log=lambda k, t: self.store.log(task_id, "planner", k, t[:2000]))
+        finally:
+            self.live_update("planner", state="idle", tool=None, note="final pass done")
+        if self.store.goal_met(task_id):
+            self.store.set_task_status(task_id, "achieved")
+        return final
+
     # ------------------------------------------------------------------ workers
     def _worker(self, task_id: int, intent, token: str, workers_guard) -> None:
         iid = int(intent["id"])
@@ -397,6 +437,21 @@ class Engine:
                 threads.append(t)
             for t in threads:
                 t.join()
+
+        # Budget ended: give the planner one judgement-only pass so evidence it already
+        # holds can close the goals (and only that).
+        current = self.store.get_task(task_id)
+        if (current and current["status"] == "open" and not self.store.goal_met(task_id)
+                and not self.stop_requested(task_id)):
+            self.emit("[engine] final judgement pass")
+            try:
+                verdict = self.final_judgement(task_id)
+                if verdict:
+                    self.emit("  planner: " + verdict.strip().replace("\n", " ")[:300])
+            except Exception as e:  # noqa: BLE001
+                self.emit(f"[engine] judgement pass failed: {type(e).__name__}: {e}")
+            if self.store.goal_met(task_id):
+                self.store.set_task_status(task_id, "achieved")
 
         status = self.store.get_task(task_id)["status"]
         ov = self.store.graph_overview(task_id)

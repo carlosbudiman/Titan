@@ -112,6 +112,17 @@ parameter, status, traffic refs, dedupe key).
 `proves` edge, and if every goal is met sets the task to `achieved`. The engine also
 re-checks after each round.
 
+### Final judgement pass
+
+A run that exhausts `--rounds` while a goal is still open would otherwise stop with
+work already done but unjudged. Before returning, `run_task` calls
+`final_judgement`: one planner call whose tool list is filtered to
+`graph_overview`, `list_goals`, `list_facts`, `list_findings`, `node_detail` and
+`prove_goal` (`run_loop(only=...)`). It cannot dispatch, so it cannot start new
+work; it either closes the goals the graph already proves or says in one sentence
+what is missing. Skipped when the operator requested a stop or when the graph has
+no facts and no findings.
+
 ## 3. Guard
 
 Order of evaluation for every tool call, before the handler runs:

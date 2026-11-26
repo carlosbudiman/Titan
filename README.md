@@ -67,6 +67,9 @@ unqueryable swamp.
   planner sees the difference between "tested, negative" and "never ran".
 - Completion comes only from `prove_goal` on each goal. No "finish" button, no
   self-declared victory.
+- When the round budget ends with goals still open, the engine runs one
+  **judgement-only** planner pass: `add_intent` is removed from its toolset, so
+  evidence already in the graph can close a goal instead of costing another run.
 
 ### Evidence discipline (inherited deliberately)
 

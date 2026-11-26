@@ -220,13 +220,16 @@ def constraints_block(store, task_id: int) -> str:
 
 # --------------------------------------------------------------------- loop
 def run_loop(llm, registry, agent: str, system: str, user: str, ctx, guard,
-             max_turns: int, poll=None, log=None, step=None) -> str:
+             max_turns: int, poll=None, log=None, step=None,
+             only: list[str] | None = None) -> str:
     """Tool-calling loop. Returns the model's final text.
 
     `step(kind, payload)` is an optional observer used by the console to show live
     agent state; it must never raise into the loop.
     """
     tools = registry.specs(agent)
+    if only:
+        tools = [t for t in tools if t["function"]["name"] in only]
     messages = [{"role": "system", "content": system}, {"role": "user", "content": user}]
     final = ""
 
