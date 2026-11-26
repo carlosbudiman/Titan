@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "dewaguard-titan"
-version = "0.5.0"
+version = "0.6.0"
 description = "Dewaguard Titan — lightweight, graph-driven autonomous pentest harness"
 requires-python = ">=3.10"
 dependencies = []

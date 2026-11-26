@@ -240,8 +240,8 @@ file writes outside it are blocked.
 titan new "Enumerate http://127.0.0.1:8080 and record what it exposes; no exploitation" \
   --title "local lab" --scope url=http://127.0.0.1:8080
 
-# 2. run it (2 rounds keeps the first run cheap)
-titan run 1 --rounds 2 --workers 1
+# 2. run it — autonomous: it keeps going until the goal is met or you stop it
+titan run 1
 
 # 3. read the result
 titan status 1
@@ -249,9 +249,35 @@ titan findings 1
 ```
 
 The model decomposes the goal into 1-6 measurable goals, the planner dispatches
-intents, each worker runs real commands in `~/.titan/runs/tasks/1/` and writes facts,
-assets and findings back into the graph. Ctrl-C is safe: open intents stay claimable,
-so `titan run 1` resumes where it stopped.
+intents, each worker runs real commands in the engagement's artifact directory and
+writes facts, assets and findings back into the graph. Ctrl-C is safe: open intents
+stay claimable, so `titan run 1` resumes where it stopped.
+
+### Run modes
+
+No round counting: you choose how much autonomy the agent gets.
+
+| Mode | Behaviour |
+|---|---|
+| **autonomous** (default) | runs round after round until every goal is proven, you press Stop, or it stops making progress |
+| **approval** | same loop, but pauses before each round and waits for Approve / Deny |
+
+```bash
+titan run 8                      # autonomous
+titan run 8 --approval           # confirm each round in the terminal
+titan run 8 --approval --no-prompt   # wait for: titan approve 8  (from anywhere)
+titan approve 8                  # release a paused engagement
+titan approve 8 --deny           # stop it instead
+```
+
+Stop conditions in autonomous mode: all goals met (`prove_goal`), operator Stop,
+`TITAN_TASK_DEADLINE` if set, `TITAN_NO_PROGRESS` consecutive rounds with no new facts
+or findings (default 4), or the safety cap `TITAN_MAX_ROUNDS` (default 200). A stop is
+recorded in the activity trail with the reason, and `--rounds N` is still available as
+an explicit hard cap for a first cheap run.
+
+In the GUI the mode is a selector next to Start/Stop, and a pending approval shows as
+a burgundy banner with **Approve & continue** / **Stop here**.
 
 ## GUI
 
@@ -276,8 +302,9 @@ full payload.
 
 Light and dark themes (burgundy on white / burgundy on near-black), a toggle in the
 header, and the choice is remembered per browser. The sidebar and the open engagement
-refresh themselves every 3 s — no manual reload — and the poll pauses while you are
-typing in a field so a hint or a scope entry is never wiped.
+refresh themselves every 3 s with no manual reload, but the poll is inert when nothing
+changed and preserves your scroll position and focused field — reading a long fact
+list or typing a hint is not interrupted.
 
 It is loopback-only: binding off `127.0.0.1` is refused unless
 `TITAN_CONSOLE_TOKEN` is set, and then every request needs `X-Titan-Token`.
@@ -301,6 +328,8 @@ It is loopback-only: binding off `127.0.0.1` is refused unless
 | `TITAN_MAX_ROUNDS` | `200` | hard stop |
 | `TITAN_TASK_DEADLINE` | `0` | seconds, 0 = none |
 | `TITAN_INTENT_LEASE` | `900` | claim expiry |
+| `TITAN_APPROVAL_TIMEOUT` | `1800` | seconds to wait for an approval decision |
+| `TITAN_NO_PROGRESS` | `4` | consecutive rounds with no new facts/findings before stopping |
 | `TITAN_RPS` | `2.0` | per-host request rate |
 | `TITAN_MAX_PER_HOST` | `1` | in-flight per host |
 | `TITAN_NOISE_PROFILE` | `balanced` | `quiet` \| `balanced` \| `aggressive` \| `off` |

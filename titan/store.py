@@ -180,6 +180,16 @@ CREATE TABLE IF NOT EXISTS skills (
     enabled     INTEGER NOT NULL DEFAULT 1
 );
 
+CREATE TABLE IF NOT EXISTS approvals (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    task_id    INTEGER NOT NULL,
+    round_no   INTEGER NOT NULL,
+    status     TEXT NOT NULL DEFAULT 'pending',   -- pending | approved | denied | timeout
+    note       TEXT,
+    created_at TEXT NOT NULL,
+    decided_at TEXT
+);
+
 CREATE TABLE IF NOT EXISTS settings (
     key        TEXT PRIMARY KEY,
     value      TEXT,
@@ -256,7 +266,8 @@ class Store:
         self.lock = threading.RLock()
         with self.lock:
             self.db.executescript(SCHEMA)
-            for stmt in ("ALTER TABLE explorations ADD COLUMN workdir TEXT",):
+            for stmt in ("ALTER TABLE explorations ADD COLUMN workdir TEXT",
+                         "ALTER TABLE explorations ADD COLUMN mode TEXT"):
                 try:
                     self.db.execute(stmt)
                 except sqlite3.OperationalError:
@@ -280,12 +291,14 @@ class Store:
 
     # ---------------------------------------------------------------- tasks
     def create_task(self, goal: str, title: str = "", description: str = "",
-                    scope: list[dict] | None = None, workdir: str = "") -> int:
+                    scope: list[dict] | None = None, workdir: str = "",
+                    mode: str = "autonomous") -> int:
         ts = now()
         tid = self.x(
-            "INSERT INTO explorations(title, goal, description, status, workdir, created_at, updated_at)"
-            " VALUES(?,?,?,'open',?,?,?)",
-            (title or goal[:80], goal, description, workdir or "", ts, ts))
+            "INSERT INTO explorations(title, goal, description, status, workdir, mode,"
+            " created_at, updated_at) VALUES(?,?,?,'open',?,?,?,?)",
+            (title or goal[:80], goal, description, workdir or "",
+             "approval" if mode == "approval" else "autonomous", ts, ts))
         self.add_node(tid, "begin", {"goal": goal, "scope": scope or []}, state="open", origin="operator")
         self.add_node(tid, "goal", {"text": goal}, state="open", origin="operator")
         for s in scope or []:
@@ -300,6 +313,34 @@ class Store:
 
     def set_task_status(self, task_id: int, status: str) -> None:
         self.x("UPDATE explorations SET status=?, updated_at=? WHERE id=?", (status, now(), task_id))
+
+    # ---------------------------------------------------------------- approvals
+    def set_task_mode(self, task_id: int, mode: str) -> None:
+        m = "approval" if mode == "approval" else "autonomous"
+        self.x("UPDATE explorations SET mode=?, updated_at=? WHERE id=?", (m, now(), task_id))
+
+    def request_approval(self, task_id: int, round_no: int, note: str = "") -> int:
+        ts = now()
+        with self.lock:
+            self.db.execute("UPDATE approvals SET status='timeout', decided_at=?"
+                            " WHERE task_id=? AND status='pending'", (ts, task_id))
+            self.db.commit()
+        return self.x("INSERT INTO approvals(task_id,round_no,status,note,created_at)"
+                      " VALUES(?,?,'pending',?,?)", (task_id, round_no, note[:1000], ts))
+
+    def decide_approval(self, task_id: int, decision: str, note: str = "") -> bool:
+        status = "approved" if decision == "approve" else "denied"
+        with self.lock:
+            cur = self.db.execute(
+                "UPDATE approvals SET status=?, note=COALESCE(NULLIF(?,''), note), decided_at=?"
+                " WHERE task_id=? AND status='pending'", (status, note[:500], now(), task_id))
+            self.db.commit()
+            return cur.rowcount > 0
+
+    def pending_approval(self, task_id: int) -> dict | None:
+        r = self.one("SELECT * FROM approvals WHERE task_id=? AND status='pending'"
+                     " ORDER BY id DESC LIMIT 1", (task_id,))
+        return dict(r) if r else None
 
     def rename_task(self, task_id: int, title: str) -> bool:
         with self.lock:

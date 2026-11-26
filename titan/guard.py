@@ -75,6 +75,7 @@ class Scope:
             except ValueError:
                 self.domains.add(v.lower())
             return
+        v = re.sub(r"^(ip|cidr|domain|url|keyword)\s*:\s*", "", v, flags=re.I)
         if v.startswith("*."):
             v = v[2:]
         v = re.sub(r"^https?://", "", v, flags=re.I)

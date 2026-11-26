@@ -150,7 +150,7 @@ const esc = s => String(s === null || s === undefined ? '' : s)
   .replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 let S = {tasks: [], task: 0, data: null, tab: 'overview', view: 'task',
          agents: null, settings: null, skills: null, traffic: null,
-         graph: null, nodeSel: 0, models: [], trafficQ: ''};
+         graph: null, nodeSel: 0, models: [], trafficQ: '', lastSig: ''};
 
 const VIEWS = [['task','Engagement'],['agents','Agents'],['settings','Settings'],
                ['skills','Skills'],['traffic','Traffic']];
@@ -226,12 +226,23 @@ async function refresh(force) {
     $('#hstats').innerHTML = '';
     return;
   }
+  const prev = S.data;
   S.data = j;
+  const sig = [j.task.status, j.overview.round, j.overview.facts_total,
+               j.overview.findings_total, j.overview.open_intents.length,
+               j.overview.running_intents.length, j.running ? 1 : 0,
+               j.approval ? 1 : 0, S.tab].join('|');
   $('#hstats').innerHTML = `<b>#${j.task.id}</b> · <b class="s-${esc(j.task.status)}">${esc(j.task.status)}</b>
     · round <b>${j.overview.round}</b> · coverage <b>${j.overview.coverage.pct}%</b>
     · findings <b>${j.overview.findings_total}</b>
     ${j.running ? '· <span class="s-running">running</span>' : ''}`;
+  if (!force && sig === S.lastSig && prev) return;   // nothing changed: leave the DOM alone
+  S.lastSig = sig;
+  const scroller = $('#main');
+  const sy = window.scrollY, st = scroller ? scroller.scrollTop : 0;
   render();
+  window.scrollTo(0, sy);
+  if (scroller) scroller.scrollTop = st;
 }
 
 function render() {
@@ -256,14 +267,25 @@ function render() {
       </div>
     </div>
     <div class="row" style="margin:1rem 0">
-      <label class="hint">Rounds <input id="rRounds" style="width:5.5rem" value="${Math.max(5, d.task.round_no || 10)}"></label>
+      <label class="hint">Mode
+        <select id="rMode" style="width:auto">
+          <option value="autonomous" ${(d.mode || 'autonomous') === 'autonomous' ? 'selected' : ''}>Autonomous — run until the goal is met or you stop it</option>
+          <option value="approval" ${d.mode === 'approval' ? 'selected' : ''}>Approval — confirm before each round</option>
+        </select></label>
       <label class="hint">Workers <input id="rWorkers" style="width:4.5rem" value="2"></label>
-      <button class="pri" onclick="runTask()" ${d.running ? 'disabled' : ''}>${d.running ? 'Running…' : 'Run'}</button>
-      <button onclick="stopTask()" ${d.running ? '' : 'disabled'}>Stop</button>
+      <button class="pri" onclick="runTask()" ${d.running ? 'disabled' : ''}>${d.running ? 'Running…' : 'Start'}</button>
+      <button onclick="stopTask()" ${(d.running || d.approval) ? '' : 'disabled'}>Stop</button>
       <button onclick="exportMd()">Export report</button>
       <span class="muted" style="margin-left:.4rem">${ov.facts_total} facts · ${ov.findings_total} findings ·
         coverage ${ov.coverage.pct}% (${ov.coverage.tested}/${ov.coverage.assets})</span>
     </div>
+    ${d.approval ? `<div class="card" style="border-color:var(--brand);margin-bottom:1rem">
+      <div class="row"><b>Waiting for your approval</b>
+        <span class="chip">round ${d.approval.round_no}</span>
+        <span style="flex:1"></span>
+        <button class="pri" onclick="decide('approve')">Approve &amp; continue</button>
+        <button class="danger" onclick="decide('deny')">Stop here</button></div>
+      <div class="muted" style="margin-top:.35rem">${esc(d.approval.note || '')}</div></div>` : ''}
     <div class="tabs">${tabs.map(t => `<button class="${t === S.tab ? 'on' : ''}" onclick="setTab('${t}')">${t}</button>`).join('')}</div>
     <div id="pane"></div>`;
   const pane = $('#pane');
@@ -645,6 +667,11 @@ function showNew() {
         <textarea id="nScope" placeholder="domain=example.com"></textarea></label>
       <label class="f"><span>Title (optional)</span>
         <input id="nTitle" placeholder="Acme — external web assessment"></label>
+      <label class="f"><span>Run mode</span>
+        <select id="nMode">
+          <option value="autonomous">Autonomous — keep going until the goal is met or you stop it</option>
+          <option value="approval">Approval — confirm before every round</option>
+        </select></label>
       <label class="f"><span>Artifact directory — notes, loot and captures for this engagement (optional)</span>
         <input id="nWorkdir" placeholder="blank = ~/.titan/runs/tasks/&lt;id&gt;"></label>
       <div class="row" style="margin-top:.8rem">
@@ -670,7 +697,8 @@ async function createTask() {
   $('#nMsg').textContent = 'Decomposing the goal into measurable targets…';
   const workdir = ($('#nWorkdir').value || '').trim();
   const j = await api('/api/task', {goal: goal, title: $('#nTitle').value.trim(),
-                                    scope: scope, workdir: workdir});
+                                    scope: scope, workdir: workdir,
+                                    mode: $('#nMode').value});
   if (j.error) {
     btn.disabled = false; btn.textContent = 'Create engagement';
     $('#nMsg').textContent = j.error; toast(j.error, 'err'); return;
@@ -707,11 +735,19 @@ async function renameTask() {
 }
 
 async function runTask() {
-  const rounds = parseInt($('#rRounds').value || '10', 10);
   const workers = parseInt($('#rWorkers').value || '2', 10);
-  const j = await api('/api/run', {task: S.task, rounds: rounds, workers: workers});
+  const mode = $('#rMode').value;
+  const j = await api('/api/run', {task: S.task, workers: workers, mode: mode});
   if (j.error) { toast(j.error, 'err'); return; }
-  toast('Run started — ' + rounds + ' rounds, ' + workers + ' worker(s)', 'ok');
+  toast(mode === 'approval' ? 'Started in approval mode — you will be asked each round'
+                            : 'Running autonomously — press Stop to end it', 'ok');
+  await refresh(true);
+}
+
+async function decide(decision) {
+  const j = await api('/api/approve', {task: S.task, decision: decision});
+  if (j.error) { toast(j.error, 'err'); return; }
+  toast(decision === 'approve' ? 'Approved — continuing' : 'Denied — stopping', 'ok');
   await refresh(true);
 }
 

@@ -10,7 +10,7 @@ import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
-VERSION = "0.5.0"
+VERSION = "0.6.0"
 TOOL_NAME = "titan"
 
 
@@ -58,6 +58,8 @@ class Settings:
     task_deadline_s: int = field(default_factory=lambda: _env_int("TITAN_TASK_DEADLINE", 0))
     heartbeat_s: int = field(default_factory=lambda: _env_int("TITAN_HEARTBEAT", 30))
     intent_lease_s: int = field(default_factory=lambda: _env_int("TITAN_INTENT_LEASE", 900))
+    approval_timeout: int = field(default_factory=lambda: _env_int("TITAN_APPROVAL_TIMEOUT", 1800))
+    no_progress_rounds: int = field(default_factory=lambda: _env_int("TITAN_NO_PROGRESS", 4))
 
     # Identity / OPSEC
     user_agent: str = field(default_factory=lambda: _env("TITAN_USER_AGENT", f"Titan-Assessment/{VERSION}"))

@@ -45,6 +45,8 @@ class Engine:
         self.live: dict[str, dict] = {}
         self.live_lock = threading.Lock()
         self._live_task: dict[str, int] = {}
+        self.approval_decision: dict[int, str] = {}
+        self.approver = None          # optional callable(task_id, summary) -> bool
 
     # ------------------------------------------------------------------ llm config
     def llm_config(self) -> dict:
@@ -166,8 +168,9 @@ class Engine:
         return p
 
     def new_task(self, goal: str, title: str = "", description: str = "",
-                 scope: list[dict] | None = None, workdir: str = "") -> int:
-        tid = self.store.create_task(goal, title, description, scope, workdir)
+                 scope: list[dict] | None = None, workdir: str = "",
+                 mode: str = "autonomous") -> int:
+        tid = self.store.create_task(goal, title, description, scope, workdir, mode)
         self.task_workdir(tid)
         goals, constraints = self.decompose(goal, description)
         self._apply_goals(tid, goals)
@@ -385,32 +388,102 @@ class Engine:
                            (node_id,))
         return int(r["c"]) if r else 0
 
+    # ------------------------------------------------------------------ approval gate
+    def approve(self, task_id: int, decision: str) -> bool:
+        """Called by the console/CLI to release or deny a pending approval."""
+        decision = "approve" if decision == "approve" else "deny"
+        self.approval_decision[task_id] = decision
+        return self.store.decide_approval(task_id, decision)
+
+    def _await_approval(self, task_id: int, round_no: int, summary: str) -> bool:
+        """Block until the operator approves/denies, the timeout expires, or a stop lands.
+
+        Reads the approvals row from the database, so the decision can come from the
+        console, another process (`titan approve N`) or the CLI prompt.
+        """
+        self.approval_decision.pop(task_id, None)
+        aid = self.store.request_approval(task_id, round_no, summary)
+        self.live_update("planner", role="planner", task=task_id, state="waiting_approval",
+                         tool=None, note=f"round {round_no} awaiting approval: {summary[:150]}",
+                         model=getattr(self.llm, "name", ""))
+        if self.approver:
+            ok = bool(self.approver(task_id, summary))
+            self.store.decide_approval(task_id, "approve" if ok else "deny", "cli")
+            self.emit(f"[approval] {'approved' if ok else 'denied'} (cli)")
+            return ok
+        self.emit("[approval] waiting for operator (console: Approve, or: titan approve "
+                  f"{task_id})")
+        deadline = time.time() + self.settings.approval_timeout
+        status = "pending"
+        while time.time() < deadline:
+            if self.stop_requested(task_id):
+                self.store.decide_approval(task_id, "deny", "stopped by operator")
+                status = "denied"
+                break
+            row = self.store.one("SELECT status FROM approvals WHERE id=?", (aid,))
+            status = row["status"] if row else "pending"
+            if status != "pending":
+                break
+            time.sleep(1.5)
+        if status == "pending":
+            self.store.decide_approval(task_id, "deny", "timed out")
+            status = "timeout"
+            self.emit(f"[approval] no answer within {self.settings.approval_timeout}s; stopping")
+        self.live_update("planner", state="idle", tool=None, note="approval resolved")
+        self.emit(f"[approval] {status}")
+        return status == "approved"
+
     # ------------------------------------------------------------------ main loop
-    def run_task(self, task_id: int, rounds: int | None = None, workers: int | None = None) -> dict:
+    def run_task(self, task_id: int, rounds: int | None = None, workers: int | None = None,
+                 mode: str | None = None) -> dict:
+        """Run until the goal is met, the operator stops it, or progress halts.
+
+        rounds=None means no round limit (a safety cap of TITAN_MAX_ROUNDS still
+        applies). mode: 'autonomous' (default) or 'approval' (pause each round).
+        """
         task = self.store.get_task(task_id)
         if not task:
             raise SystemExit(f"no task {task_id}")
-        rounds = rounds or self.settings.max_rounds
+        mode = (mode or task["mode"] or "autonomous").lower()
+        if mode == "approval" and task["mode"] != "approval":
+            self.store.set_task_mode(task_id, "approval")
+        hard_cap = rounds or self.settings.max_rounds
         workers = max(1, workers or self.settings.max_workers)
         deadline = (time.time() + self.settings.task_deadline_s) if self.settings.task_deadline_s else 0
         self.clear_stop(task_id)
         self.apply_runtime_settings()
         self.reload_llm()
-        self.emit(f"Titan task #{task_id}: {task['goal']}")
+        self.emit(f"Titan task #{task_id} [{mode}]: {task['goal']}")
 
-        for rnd in range(max(1, rounds)):
+        no_progress = 0
+        last_progress = (0, 0)
+        rnd = 0
+        while True:
             if self.stop_requested(task_id):
                 self.emit("[engine] stop requested; finishing current work")
                 self.store.set_task_status(task_id, "stopped")
                 break
             if self.store.goal_met(task_id):
                 self.store.set_task_status(task_id, "achieved")
+                self.emit("[engine] all goals met")
                 break
             if deadline and time.time() > deadline:
                 self.emit("[engine] task deadline reached; stopping")
                 self.store.set_task_status(task_id, "stopped")
                 break
+            if rnd >= hard_cap:
+                self.emit(f"[engine] round cap {hard_cap} reached; stopping")
+                self.store.set_task_status(task_id, "stopped")
+                break
+            if mode == "approval" and rnd > 0:
+                ov = self.store.graph_overview(task_id)
+                nxt = ov["open_intents"][:3]
+                summary = "; ".join(i["summary"][:120] for i in nxt) or "no queued intent"
+                if not self._await_approval(task_id, rnd, f"next: {summary}"):
+                    self.store.set_task_status(task_id, "stopped")
+                    break
 
+            rnd += 1
             n = self.store.bump_round(task_id)
             self.emit(f"[round {n}] planning")
             try:
@@ -455,6 +528,20 @@ class Engine:
                 threads.append(t)
             for t in threads:
                 t.join()
+
+            ov = self.store.graph_overview(task_id)
+            progress = (ov["facts_total"], ov["findings_total"])
+            if progress == last_progress:
+                no_progress += 1
+            else:
+                no_progress = 0
+                last_progress = progress
+            if no_progress >= self.settings.no_progress_rounds:
+                self.emit(f"[engine] {no_progress} rounds without new facts or findings; stopping")
+                self.store.log(task_id, "engine", "halt",
+                               f"halted after {no_progress} rounds with no progress")
+                self.store.set_task_status(task_id, "stopped")
+                break
 
         # Budget ended: give the planner one judgement-only pass so evidence it already
         # holds can close the goals (and only that).

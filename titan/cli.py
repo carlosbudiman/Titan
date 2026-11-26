@@ -251,7 +251,8 @@ def cmd_new(args) -> int:
     if not scope:
         print("warning: no --scope given; every target will be refused by the guard")
     tid = eng.new_task(args.goal, args.title or "", args.desc or "", scope,
-                       getattr(args, "workdir", "") or "")
+                       getattr(args, "workdir", "") or "",
+                       "approval" if getattr(args, "approval", False) else "autonomous")
     print(f"task #{tid} created")
     for g in eng.store.goals(tid):
         print(f"  goal {g['id']}: {g['text']}")
@@ -260,8 +261,12 @@ def cmd_new(args) -> int:
 
 def cmd_run(args) -> int:
     eng = _engine(args)
-    _need(eng, args.task)
-    res = eng.run_task(args.task, rounds=args.rounds, workers=args.workers)
+    task = _need(eng, args.task)
+    mode = "approval" if getattr(args, "approval", False) else (task["mode"] or "autonomous")
+    if mode == "approval" and sys.stdin.isatty() and not getattr(args, "no_prompt", False):
+        eng.approver = lambda tid, s: _ask(f"proceed with the next round? ({s[:120]}) [Y/n]",
+                                           "Y").lower().startswith("y")
+    res = eng.run_task(args.task, rounds=args.rounds, workers=args.workers, mode=mode)
     print_summary(res)
     return 0
 
@@ -394,6 +399,17 @@ def cmd_export(args) -> int:
     return 0
 
 
+def cmd_approve(args) -> int:
+    eng = _engine(args)
+    t = _need(eng, args.task)
+    if not eng.store.pending_approval(args.task):
+        print(f"task {args.task} is not waiting for approval (status {t['status']})")
+        return 1
+    eng.store.decide_approval(args.task, "deny" if args.deny else "approve", "cli")
+    print(("denied" if args.deny else "approved") + f" task {args.task}")
+    return 0
+
+
 def cmd_serve(args) -> int:
     from .server import serve
     s = _settings(args)
@@ -481,13 +497,20 @@ def build_parser() -> argparse.ArgumentParser:
     n.add_argument("--desc", default="")
     n.add_argument("--scope", action="append", metavar="KIND=VALUE",
                    help="authorized target: domain=, ip=, cidr=, url=, keyword=")
+    n.add_argument("--approval", action="store_true",
+                   help="create the engagement in approval mode (confirm each round)")
     n.add_argument("--workdir", default="",
                    help="directory for this engagement's artifacts (default under ~/.titan/runs)")
     n.set_defaults(fn=cmd_new)
 
     r = sub.add_parser("run", help="run the orchestrator on a task")
     r.add_argument("task", type=int)
-    r.add_argument("--rounds", type=int)
+    r.add_argument("--rounds", type=int,
+                   help="hard cap on rounds (default: run until done or stopped)")
+    r.add_argument("--approval", action="store_true",
+                   help="pause before each round for a yes/no confirmation")
+    r.add_argument("--no-prompt", action="store_true", help="with --approval, wait for "
+                   "`titan approve <task>` instead of prompting")
     r.add_argument("--workers", type=int)
     r.add_argument("--interactive", action="store_true", help="answer ask_operator prompts on stdin")
     r.set_defaults(fn=cmd_run)
@@ -530,6 +553,11 @@ def build_parser() -> argparse.ArgumentParser:
     sv = sub.add_parser("serve", help="web GUI + JSON API (localhost)")
     sv.add_argument("--task", type=int, default=0)
     sv.set_defaults(fn=cmd_serve)
+
+    ap = sub.add_parser("approve", help="approve the next round of a paused engagement")
+    ap.add_argument("task", type=int)
+    ap.add_argument("--deny", action="store_true")
+    ap.set_defaults(fn=cmd_approve)
 
     sub.add_parser("demo", help="seed a demo task (no LLM needed)").set_defaults(fn=cmd_demo)
     return p

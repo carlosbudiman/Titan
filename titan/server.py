@@ -123,6 +123,8 @@ def serve(settings, task_id: int = 0) -> int:
                     is_running = tid in running and running[tid].is_alive()
                 return self._json({
                     "task": dict(store.get_task(tid)),
+                    "mode": (store.get_task(tid)["mode"] or "autonomous"),
+                    "approval": store.pending_approval(tid),
                     "overview": store.graph_overview(tid),
                     "findings": store.findings(tid),
                     "assets": store.assets(tid, limit=200),
@@ -263,7 +265,8 @@ def serve(settings, task_id: int = 0) -> int:
                          if isinstance(s, dict) and s.get("value")]
                 tid = engine.new_task(goal, str(body.get("title") or ""),
                                       str(body.get("desc") or ""), scope,
-                                      str(body.get("workdir") or "").strip())
+                                      str(body.get("workdir") or "").strip(),
+                                      str(body.get("mode") or "autonomous"))
                 return self._json({"task": tid})
 
             if path == "/api/task/delete":
@@ -289,12 +292,14 @@ def serve(settings, task_id: int = 0) -> int:
                 with lock:
                     if tid in running and running[tid].is_alive():
                         return self._json({"error": "already running"}, 409)
-                    rounds = max(1, int(body.get("rounds") or settings.max_rounds))
+                    raw_rounds = body.get("rounds")
+                    rounds = int(raw_rounds) if raw_rounds not in (None, "", 0) else None
                     workers = max(1, min(int(body.get("workers") or settings.max_workers), 8))
+                    mode = str(body.get("mode") or store.get_task(tid)["mode"] or "autonomous")
 
                     def job():
                         try:
-                            engine.run_task(tid, rounds=rounds, workers=workers)
+                            engine.run_task(tid, rounds=rounds, workers=workers, mode=mode)
                         except Exception as e:  # noqa: BLE001
                             store.log(tid, "engine", "error", f"run failed: {e}")
 
@@ -309,6 +314,15 @@ def serve(settings, task_id: int = 0) -> int:
                     return self._json({"error": "no task"}, 404)
                 engine.request_stop(tid)
                 return self._json({"stopping": tid})
+
+            if path == "/api/approve":
+                tid = int(body.get("task") or 0)
+                decision = str(body.get("decision") or "approve")
+                if not store.get_task(tid):
+                    return self._json({"error": f"no task {tid}"}, 404)
+                ok = engine.approve(tid, decision)
+                store.log(tid, "operator", "approval", decision)
+                return self._json({"approval": decision, "applied": bool(ok)})
 
             if path == "/api/hint":
                 tid = int(body.get("task") or 0)

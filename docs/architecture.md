@@ -112,6 +112,24 @@ parameter, status, traffic refs, dedupe key).
 `proves` edge, and if every goal is met sets the task to `achieved`. The engine also
 re-checks after each round.
 
+### Modes and stopping
+
+`run_task(task_id, rounds=None, workers=None, mode=None)` runs until the goal is met
+or the operator stops it. Two modes, stored on the engagement (`explorations.mode`):
+
+- `autonomous` — loop continuously.
+- `approval` — before each round, insert an `approvals` row (`pending`), set the
+  planner's telemetry to `waiting_approval`, and poll that row every 1.5 s until it is
+  decided, `TITAN_APPROVAL_TIMEOUT` elapses, or a stop lands. Because the state is in
+  SQLite, the decision can come from the console, `titan approve N` in another
+  process, or the CLI prompt (`engine.approver`). Deny or timeout sets the task to
+  `stopped`.
+
+Stopping conditions, in order of evaluation: operator stop flag; all goals met;
+`TITAN_TASK_DEADLINE`; hard round cap (`--rounds` or `TITAN_MAX_ROUNDS`, default 200);
+`TITAN_NO_PROGRESS` consecutive rounds whose fact+finding count did not move (default
+4, logged as a `halt` activity row); planner LLM error (stops instead of looping).
+
 ### Final judgement pass
 
 A run that exhausts `--rounds` while a goal is still open would otherwise stop with

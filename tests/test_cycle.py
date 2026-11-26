@@ -267,6 +267,11 @@ class CycleTest(unittest.TestCase):
         self.assertFalse(s.allows_host("zing-id.com.evil.test"))
         self.assertFalse(s.allows_host("192.168.168.99"))
 
+        # "kind:value" pasted into the wrong field must still parse
+        s2 = Scope([{"kind": "domain", "value": "ip:10.20.30.40"}])
+        self.assertTrue(s2.allows_host("10.20.30.40"))
+        self.assertNotIn("ip", s2.domains)
+
     def test_engagement_workdir_is_used_and_enforced(self):
         eng = self.eng
         target = self.tmp / "case" / "pelican"
@@ -285,6 +290,80 @@ class CycleTest(unittest.TestCase):
         ok, msg = g.check("write_file", {"path": "/etc/passwd", "content": "x"})
         self.assertFalse(ok)
         self.assertIn("engagement work directory", msg)
+
+    def test_approval_mode_waits_then_obeys(self):
+        import threading as th
+        import time as tm
+        eng, target = self.eng, self.target.url
+        eng.llm.script.extend([
+            Reply(content=json.dumps({"goals": ["prove something"], "constraints": []})),
+            Reply(content="", tool_calls=[_tc(1, "add_intent", {"intents": [
+                {"summary": f"round one against {target}"}]})]),
+            Reply(content="dispatched round one"),
+            Reply(content="", tool_calls=[_tc(2, "record_fact", {
+                "summary": "fact one", "source": "tool_output", "confidence": "observed"})]),
+            Reply(content="round one done"),
+            Reply(content="", tool_calls=[_tc(3, "add_intent", {"intents": [
+                {"summary": f"round two against {target}"}]})]),
+            Reply(content="dispatched round two"),
+            Reply(content="", tool_calls=[_tc(4, "record_fact", {
+                "summary": "fact two", "source": "tool_output", "confidence": "observed"})]),
+            Reply(content="round two done"),
+        ])
+        tid = eng.new_task("approval flow", scope=[{"kind": "url", "value": target}],
+                           mode="approval")
+        out = {}
+
+        def run():
+            out["res"] = eng.run_task(tid, workers=1, mode="approval")
+
+        th.Thread(target=run, daemon=True).start()
+        pending = None
+        for _ in range(100):
+            pending = eng.store.pending_approval(tid)
+            if pending:
+                break
+            tm.sleep(0.05)
+        self.assertIsNotNone(pending, "engine never asked for approval")
+        self.assertEqual(pending["round_no"], 1)
+
+        eng.approve(tid, "approve")
+        second = None
+        for _ in range(200):
+            second = eng.store.pending_approval(tid)
+            if second and second["round_no"] == 2:
+                break
+            tm.sleep(0.05)
+        self.assertIsNotNone(second, "second approval was never requested")
+        self.assertEqual(second["round_no"], 2)
+
+        eng.approve(tid, "deny")
+        for _ in range(100):
+            if out.get("res"):
+                break
+            tm.sleep(0.05)
+        self.assertIn("res", out)
+        self.assertEqual(out["res"]["status"], "stopped")
+        self.assertIsNone(eng.store.pending_approval(tid))
+
+    def test_autonomous_run_halts_when_nothing_progresses(self):
+        eng = self.eng
+        tid = eng.new_task("no progress", scope=[{"kind": "url", "value": self.target.url}])
+        # each round: planner dispatches, worker writes nothing back
+        script = []
+        for i in range(6):
+            script.append(Reply(content="", tool_calls=[_tc(10 + i, "add_intent", {"intents": [
+                {"summary": f"direction {i} on {self.target.url}"}]})]))
+            script.append(Reply(content="dispatched"))
+            script.append(Reply(content="nothing to report"))
+        eng.llm.script.extend(script)
+        eng.settings.no_progress_rounds = 2
+        res = eng.run_task(tid, workers=1, mode="autonomous")
+        self.assertEqual(res["status"], "stopped")
+        self.assertLessEqual(res["rounds"], 6)
+        row = eng.store.one("SELECT summary FROM activity WHERE task_id=? AND kind='halt'"
+                            " ORDER BY id DESC LIMIT 1", (tid,))
+        self.assertIsNotNone(row, "no halt was logged")
 
     def test_delete_task_removes_derived_rows(self):
         eng = self.eng
