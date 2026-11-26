@@ -44,12 +44,8 @@ if "$HERE/bin/titan" doctor; then
   cat <<'EOF'
 
   Ready. Next:
-    1. point Titan at a model (any OpenAI-compatible endpoint):
-         export TITAN_LLM_BASE_URL=http://127.0.0.1:11434/v1
-         export TITAN_LLM_MODEL=qwen2.5:14b
-         # or: export TITAN_LLM_BASE_URL=https://api.deepseek.com/v1
-         #     export TITAN_LLM_MODEL=deepseek-chat
-         #     export TITAN_LLM_API_KEY=...
+    1. configure the model (interactive; stores the key in ~/.titan/secrets.json 0600):
+         titan setup
     2. create an engagement:
          titan new "Find and prove the highest-impact entry point on app.example.com" \
            --scope domain=example.com

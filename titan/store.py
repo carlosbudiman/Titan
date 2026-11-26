@@ -180,6 +180,28 @@ CREATE TABLE IF NOT EXISTS skills (
     enabled     INTEGER NOT NULL DEFAULT 1
 );
 
+CREATE TABLE IF NOT EXISTS settings (
+    key        TEXT PRIMARY KEY,
+    value      TEXT,
+    updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS agent_state (
+    key        TEXT PRIMARY KEY,
+    task_id    INTEGER NOT NULL,
+    role       TEXT,
+    intent     INTEGER,
+    state      TEXT,
+    tool       TEXT,
+    note       TEXT,
+    model      TEXT,
+    turns      INTEGER NOT NULL DEFAULT 0,
+    tokens_in  INTEGER NOT NULL DEFAULT 0,
+    tokens_out INTEGER NOT NULL DEFAULT 0,
+    started    REAL NOT NULL,
+    updated    REAL NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS llm_usage (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
     task_id    INTEGER,
@@ -726,3 +748,108 @@ class Store:
     def close(self) -> None:
         with self.lock:
             self.db.close()
+
+    # ---------------------------------------------------------------- settings
+    def get_setting(self, key: str, default: str = "") -> str:
+        r = self.one("SELECT value FROM settings WHERE key=?", (key,))
+        return r["value"] if r and r["value"] is not None else default
+
+    def set_setting(self, key: str, value: str) -> None:
+        with self.lock:
+            self.db.execute(
+                "INSERT INTO settings(key,value,updated_at) VALUES(?,?,?)"
+                " ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at",
+                (key, str(value), now()))
+            self.db.commit()
+
+    def settings(self) -> dict:
+        return {r["key"]: r["value"] for r in self.q("SELECT key,value FROM settings")}
+
+    # ---------------------------------------------------------------- graph / traffic views
+    def graph_data(self, task_id: int) -> dict:
+        nodes = []
+        for r in self.q("SELECT id,kind,payload,state,priority,created_at,completed_at"
+                        " FROM exploration_nodes WHERE exploration_id=? ORDER BY id", (task_id,)):
+            p = jloads(r["payload"], {})
+            nodes.append({"id": r["id"], "kind": r["kind"], "state": r["state"],
+                          "label": (p.get("summary") or p.get("text") or p.get("goal") or "")[:120],
+                          "priority": r["priority"], "created_at": r["created_at"]})
+        edges = [dict(r) for r in self.q(
+            "SELECT src_id AS src, dst_id AS dst, rel FROM exploration_edges"
+            " WHERE exploration_id=?", (task_id,))]
+        return {"nodes": nodes, "edges": edges}
+
+    def traffic_list(self, task_id: int, q: str = "", limit: int = 50) -> list[dict]:
+        sql = ("SELECT id,method,url,status,length(resp_body) AS rlen,created_at"
+               " FROM traffic WHERE task_id=?")
+        args: list[Any] = [task_id]
+        if q:
+            sql += " AND (url LIKE ? OR resp_body LIKE ?)"
+            args += [f"%{q}%", f"%{q}%"]
+        sql += " ORDER BY id DESC LIMIT ?"
+        args.append(max(1, min(int(limit), 200)))
+        return [dict(r) for r in self.q(sql, args)]
+
+    def set_finding_status(self, finding_id: int, status: str) -> bool:
+        allowed = {"open", "confirmed", "false_positive", "duplicate", "ignored"}
+        if status not in allowed:
+            return False
+        with self.lock:
+            cur = self.db.execute("UPDATE findings SET status=? WHERE id=?", (status, finding_id))
+            self.db.commit()
+            return cur.rowcount > 0
+
+    def agent_usage(self, task_id: int) -> list[dict]:
+        return [dict(r) for r in self.q(
+            "SELECT agent, COUNT(*) calls, SUM(tokens_in) tin, SUM(tokens_out) tout"
+            " FROM llm_usage WHERE task_id=? GROUP BY agent ORDER BY agent", (task_id,))]
+
+    # ---------------------------------------------------------------- live agents
+    def agent_upsert(self, key: str, task_id: int, **f) -> None:
+        t = time.time()
+        with self.lock:
+            row = self.db.execute("SELECT started, turns, tokens_in, tokens_out"
+                                  " FROM agent_state WHERE key=?", (key,)).fetchone()
+            if row is None:
+                self.db.execute(
+                    "INSERT INTO agent_state(key,task_id,role,intent,state,tool,note,model,"
+                    "turns,tokens_in,tokens_out,started,updated)"
+                    " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    (key, task_id, f.get("role"), f.get("intent"), f.get("state"),
+                     f.get("tool"), (f.get("note") or "")[:400], f.get("model"),
+                     int(f.get("turns") or 0), int(f.get("tokens_in") or 0),
+                     int(f.get("tokens_out") or 0), t, t))
+            else:
+                self.db.execute(
+                    "UPDATE agent_state SET state=COALESCE(?,state), tool=COALESCE(?,tool),"
+                    " note=COALESCE(?,note), intent=COALESCE(?,intent),"
+                    " turns=turns+?, tokens_in=tokens_in+?, tokens_out=tokens_out+?,"
+                    " model=COALESCE(?,model), updated=? WHERE key=?",
+                    (f.get("state"), f.get("tool"), (f.get("note") or None),
+                     f.get("intent"), int(f.get("turn") or 0) if f.get("turn") else
+                     int(f.get("turns") or 0),
+                     int(f.get("tokens_in") or 0), int(f.get("tokens_out") or 0),
+                     f.get("model"), t, key))
+            self.db.commit()
+
+    def agent_drop(self, key: str) -> None:
+        with self.lock:
+            self.db.execute("DELETE FROM agent_state WHERE key=?", (key,))
+            self.db.commit()
+
+    def agents(self, task_id: int = 0) -> list[dict]:
+        sql = "SELECT * FROM agent_state"
+        args: tuple = ()
+        if task_id:
+            sql += " WHERE task_id=?"
+            args = (task_id,)
+        now = time.time()
+        out = []
+        for r in self.q(sql, args):
+            d = dict(r)
+            d["elapsed_s"] = int(now - (d.get("started") or now))
+            d["idle_s"] = int(now - (d.get("updated") or now))
+            if d["idle_s"] > 120 and d.get("state") not in ("idle", "stale"):
+                d["state"] = "stale"
+            out.append(d)
+        return sorted(out, key=lambda x: (x.get("role") != "planner", x.get("key", "")))

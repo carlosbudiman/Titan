@@ -5,12 +5,14 @@ import argparse
 import json
 import sys
 import time
+import urllib.error
+import urllib.request
 from pathlib import Path
 
 from .agents import GOALS_PROMPT
-from .config import VERSION, Settings
+from .config import VERSION, Settings, key_source, load_api_key, mask, save_api_key
 from .engine import Engine
-from .llm import LLM, MockLLM, Reply
+from .llm import LLM, MockLLM, Reply, list_models
 from .skills import SkillIndex
 from .store import Store, jloads
 
@@ -73,13 +75,23 @@ def cmd_doctor(args) -> int:
     print(f"skills loaded    {len(sk.skills)}: {', '.join(sorted(sk.skills))}")
     if not sk.skills:
         ok = False
-    print(f"model            {s.model or '(unset)'}")
-    print(f"endpoint         {s.base_url}")
-    if s.model:
+
+    store = Store(s.db_path)
+    cfg = store.settings()
+    base = cfg.get("llm.base_url") or s.base_url
+    model = cfg.get("llm.model") or s.model
+    key = load_api_key(s)
+    print(f"model            {model or '(unset - run: titan setup)'}")
+    print(f"endpoint         {base}")
+    print(f"api key          {mask(key)} via {key_source(s)}")
+    if s.api_key and cfg.get("llm.base_url"):
+        print("note             env TITAN_LLM_API_KEY overrides any key saved by setup")
+    if model:
         try:
-            LLM(s.base_url, s.model, s.api_key, timeout=15).chat(
+            t0 = time.time()
+            LLM(base, model, key, timeout=20).chat(
                 [{"role": "user", "content": "reply with: ok"}], max_tokens=8)
-            print("llm probe        ok")
+            print(f"llm probe        ok ({(time.time() - t0) * 1000:.0f} ms)")
         except Exception as e:  # noqa: BLE001
             print(f"llm probe        FAILED: {e}")
             ok = False
@@ -88,6 +100,145 @@ def cmd_doctor(args) -> int:
     print("status           " + ("ready" if ok else "incomplete"))
     return 0 if ok else 1
 
+
+# ------------------------------------------------------------------ setup wizard
+def _ask(label: str, default: str = "", secret: bool = False, allow_empty: bool = False) -> str:
+    hint = f" [{default}]" if default else ""
+    while True:
+        try:
+            if secret:
+                import getpass
+                val = getpass.getpass(f"{label}{hint}: ")
+            else:
+                val = input(f"{label}{hint}: ")
+        except EOFError:
+            val = ""
+        val = (val or "").strip()
+        if not val and default:
+            return default
+        if val or allow_empty:
+            return val
+        print("  a value is required (Ctrl-C to abort)")
+
+
+def _list_models(base: str, key: str, timeout: int = 15) -> list[str]:
+    return list_models(base, key, timeout)
+
+
+def cmd_setup(args) -> int:
+    s = _settings(args)
+    store = Store(s.db_path)
+    cfg = store.settings()
+    base = cfg.get("llm.base_url") or s.base_url
+    model = cfg.get("llm.model") or s.model
+    key = load_api_key(s)
+
+    if args.show:
+        print(f"endpoint   {base}")
+        print(f"model      {model or '(unset)'}")
+        print(f"api key    {mask(key)} via {key_source(s)}")
+        for k in ("llm.timeout", "llm.max_tokens", "llm.temperature", "run.rps",
+                  "run.max_workers", "run.noise_profile"):
+            if cfg.get(k):
+                print(f"{k:<18} {cfg[k]}")
+        return 0
+
+    interactive = not args.url and sys.stdin.isatty()
+    print(f"Dewaguard Titan {VERSION} - model setup")
+    print("Press Enter to keep the value shown in brackets.\n")
+
+    if args.url:
+        base = args.url
+    elif interactive:
+        base = _ask("base URL (OpenAI-compatible, e.g. http://127.0.0.1:11434/v1)", base)
+    while not base.startswith(("http://", "https://")):
+        if not interactive:
+            print("ERROR: --url must start with http:// or https://", file=sys.stderr)
+            return 2
+        base = _ask("base URL must start with http:// or https://", base)
+
+    print(f"\napi key: {mask(key)} via {key_source(s)}")
+    if getattr(args, "api_key_stdin", False):
+        key = sys.stdin.readline().strip()
+    elif args.api_key is not None:
+        key = args.api_key
+    elif interactive:
+        entered = _ask("api key (hidden; blank keeps the current one)", "", secret=True,
+                       allow_empty=True)
+        if entered:
+            key = entered
+
+    models: list[str] = []
+    if not args.no_probe:
+        try:
+            models = _list_models(base, key)
+            print(f"\nendpoint reachable, {len(models)} model(s) available")
+        except Exception as e:  # noqa: BLE001
+            print(f"\ncould not list models ({type(e).__name__}: {e}) - continuing anyway")
+
+    if args.model:
+        model = args.model
+    elif interactive:
+        if models:
+            for i, m in enumerate(models[:30], 1):
+                print(f"  {i:>2}. {m}")
+            choice = _ask("model (number or id)", model or (models[0] if models else ""))
+            if choice.isdigit() and 1 <= int(choice) <= min(len(models), 30):
+                model = models[int(choice) - 1]
+            else:
+                model = choice
+        else:
+            model = _ask("model id", model)
+
+    timeout = args.timeout or int(cfg.get("llm.timeout") or s.request_timeout)
+    max_tokens = args.max_tokens if args.max_tokens is not None else int(cfg.get("llm.max_tokens") or 0)
+    temperature = args.temperature if args.temperature is not None else float(
+        cfg.get("llm.temperature") or s.temperature)
+    if interactive and not args.url:
+        adv = _ask("advanced settings (timeout/max_tokens/temperature)? [y/N]", "N")
+        if adv.lower().startswith("y"):
+            timeout = int(_ask("request timeout seconds", str(timeout)))
+            max_tokens = int(_ask("max tokens (0 = endpoint default)", str(max_tokens)))
+            temperature = float(_ask("temperature", str(temperature)))
+            rps = _ask("requests per second per host", cfg.get("run.rps") or str(s.rps))
+            workers = _ask("parallel workers", cfg.get("run.max_workers") or str(s.max_workers))
+            noise = _ask("noise profile (quiet/balanced/aggressive/off)",
+                         cfg.get("run.noise_profile") or s.noise_profile)
+            store.set_setting("run.rps", rps)
+            store.set_setting("run.max_workers", workers)
+            store.set_setting("run.noise_profile", noise)
+
+    store.set_setting("llm.base_url", base)
+    store.set_setting("llm.model", model)
+    store.set_setting("llm.timeout", str(timeout))
+    store.set_setting("llm.max_tokens", str(max_tokens))
+    store.set_setting("llm.temperature", str(temperature))
+    key_file = save_api_key(s, key) if key else None
+
+    print("\nsaved:")
+    print(f"  endpoint   {base}")
+    print(f"  model      {model}")
+    print(f"  settings   {s.db_path} (no secrets)")
+    print(f"  api key    {mask(key)} -> {key_file} (0600)" if key_file
+          else "  api key    (unset - only works for unauthenticated endpoints)")
+    if s.api_key:
+        print("  warning    TITAN_LLM_API_KEY is set in the environment and takes precedence")
+
+    if args.no_test:
+        return 0
+    print("\ntesting a real completion...")
+    try:
+        t0 = time.time()
+        reply = LLM(base, model, key, min(timeout, 60), 32, temperature).chat(
+            [{"role": "system", "content": "Answer with one word."},
+             {"role": "user", "content": "Say exactly: ok"}])
+        ms = (time.time() - t0) * 1000
+        print(f"  ok in {ms:.0f} ms: {reply.content.strip()[:80] or '(empty content)'}")
+        return 0
+    except Exception as e:  # noqa: BLE001
+        print(f"  FAILED: {e}")
+        print("  the settings are saved; fix the endpoint/key and run 'titan setup' again")
+        return 1
 
 def cmd_new(args) -> int:
     eng = _engine(args)
@@ -307,6 +458,21 @@ def build_parser() -> argparse.ArgumentParser:
 
     sub.add_parser("init", help="create state dirs, database and skill index").set_defaults(fn=cmd_init)
     sub.add_parser("doctor", help="verify the install").set_defaults(fn=cmd_doctor)
+
+    su = sub.add_parser("setup", help="configure the model endpoint and key (interactive)")
+    su.add_argument("--url", help="OpenAI-compatible base URL (skips the prompt)")
+    su.add_argument("--model", help="model id (skips the prompt)")
+    su.add_argument("--api-key", dest="api_key", default=None,
+                    help="API key; omit to keep the stored one (leaks into shell history)")
+    su.add_argument("--api-key-stdin", action="store_true",
+                    help="read the API key from stdin (no shell history)")
+    su.add_argument("--timeout", type=int)
+    su.add_argument("--max-tokens", dest="max_tokens", type=int)
+    su.add_argument("--temperature", type=float)
+    su.add_argument("--no-probe", action="store_true", help="do not list models")
+    su.add_argument("--no-test", action="store_true", help="do not send a test completion")
+    su.add_argument("--show", action="store_true", help="print the current config and exit")
+    su.set_defaults(fn=cmd_setup)
 
     n = sub.add_parser("new", help="create a task from a goal")
     n.add_argument("goal")

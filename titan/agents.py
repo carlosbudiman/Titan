@@ -220,16 +220,32 @@ def constraints_block(store, task_id: int) -> str:
 
 # --------------------------------------------------------------------- loop
 def run_loop(llm, registry, agent: str, system: str, user: str, ctx, guard,
-             max_turns: int, poll=None, log=None) -> str:
-    """Tool-calling loop. Returns the model's final text."""
+             max_turns: int, poll=None, log=None, step=None) -> str:
+    """Tool-calling loop. Returns the model's final text.
+
+    `step(kind, payload)` is an optional observer used by the console to show live
+    agent state; it must never raise into the loop.
+    """
     tools = registry.specs(agent)
     messages = [{"role": "system", "content": system}, {"role": "user", "content": user}]
     final = ""
+
+    def emit(kind: str, payload: dict) -> None:
+        if not step:
+            return
+        try:
+            step(kind, payload)
+        except Exception:  # noqa: BLE001 - an observer must not break the agent
+            pass
+
     for turn in range(max(1, max_turns)):
         reply: Reply = llm.chat(messages, tools=tools)
         if reply.tokens_in or reply.tokens_out:
             ctx.store.usage(ctx.task_id, agent, getattr(llm, "name", ""),
                             reply.tokens_in, reply.tokens_out)
+        emit("llm", {"turn": True, "tokens_in": reply.tokens_in,
+                     "tokens_out": reply.tokens_out,
+                     "note": _short(reply.content, 120) if reply.content else "tool call"})
         if reply.content:
             final = reply.content
             if log:
@@ -242,6 +258,7 @@ def run_loop(llm, registry, agent: str, system: str, user: str, ctx, guard,
                                                       "arguments": c["arguments"]}}
                                         for c in reply.tool_calls]})
         for call in reply.tool_calls:
+            emit("tool_start", {"tool": call["name"], "args": _short(call["arguments"], 160)})
             try:
                 args = json.loads(call["arguments"] or "{}")
                 if not isinstance(args, dict):
@@ -255,6 +272,8 @@ def run_loop(llm, registry, agent: str, system: str, user: str, ctx, guard,
                 else:
                     result, is_err = registry.call(call["name"], args, ctx)
             guard.note_result(is_err, result)
+            emit("tool_end", {"tool": call["name"], "ok": not is_err,
+                              "note": _short(result, 160)})
             if log:
                 log("tool", f"{call['name']}({_short(call['arguments'])}) -> {_short(result, 300)}")
             messages.append({"role": "tool", "tool_call_id": call["id"],

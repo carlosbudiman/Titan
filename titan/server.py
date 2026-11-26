@@ -1,342 +1,57 @@
 """Local web console for Dewaguard Titan.
 
-Serves a single-page UI plus a small JSON API. Binds 127.0.0.1 by default: the
-mutating endpoints (create task, run, stop, steer, kill) are operator controls, not
-a service. If you bind it anywhere else you must set TITAN_CONSOLE_TOKEN, and every
-request then needs the matching X-Titan-Token header.
+Serves the single-page UI (titan/gui.py) plus a JSON API. Binds 127.0.0.1 by
+default: the mutating endpoints are operator controls, not a service. Binding it
+anywhere else requires TITAN_CONSOLE_TOKEN, and then every request must carry the
+matching X-Titan-Token header.
 """
 from __future__ import annotations
 
 import json
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
+from .config import key_source, load_api_key, mask, save_api_key
 from .engine import Engine
+from .gui import GUI
+from .llm import LLM, LLMError, list_models
+from .skills import SkillIndex
 from .store import Store
 
 LOOPBACK_BINDS = {"127.0.0.1", "::1", "localhost"}
-
-GUI = r"""<!doctype html>
-<html><head><meta charset="utf-8"><title>Dewaguard Titan</title>
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<style>
-:root{--bg:#0e1013;--panel:#161a20;--line:#262c36;--fg:#d8dee9;--dim:#7d8798;
-      --accent:#59a6ff;--ok:#4cc38a;--warn:#e2b93b;--bad:#e05561}
-*{box-sizing:border-box}
-body{margin:0;font:13px/1.55 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
-     background:var(--bg);color:var(--fg)}
-header{display:flex;align-items:center;gap:1rem;padding:.6rem 1rem;border-bottom:1px solid var(--line);
-       background:var(--panel);position:sticky;top:0;z-index:5;flex-wrap:wrap}
-header h1{font-size:.85rem;letter-spacing:.18em;margin:0;font-weight:600}
-header .stat{color:var(--dim)} header .stat b{color:var(--fg)}
-main{display:grid;grid-template-columns:270px 1fr;min-height:calc(100vh - 49px)}
-nav{border-right:1px solid var(--line);padding:.6rem;overflow:auto}
-nav .task{padding:.45rem .55rem;border:1px solid transparent;border-radius:4px;cursor:pointer;
-          margin-bottom:.25rem}
-nav .task:hover{background:#1b2028}
-nav .task.on{background:#1d2634;border-color:#2f4a6d}
-nav .task .t{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-nav .task .m{color:var(--dim);font-size:11px}
-section{padding:1rem 1.2rem;overflow:auto}
-h2{font-size:.95rem;margin:.2rem 0 .1rem}
-h3{font-size:.78rem;letter-spacing:.09em;color:var(--dim);text-transform:uppercase;margin:1.2rem 0 .4rem}
-button{background:#1f2731;color:var(--fg);border:1px solid var(--line);border-radius:4px;
-       padding:.28rem .6rem;cursor:pointer;font:inherit}
-button:hover{border-color:#3d4a5c}
-button.pri{background:#1d3a5c;border-color:#2f5b8f}
-button.danger{background:#3a1f23;border-color:#5e2b31}
-button:disabled{opacity:.45;cursor:default}
-input,textarea,select{background:#10141a;color:var(--fg);border:1px solid var(--line);
-       border-radius:4px;padding:.3rem .45rem;font:inherit;width:100%}
-textarea{resize:vertical;min-height:4.2rem}
-table{border-collapse:collapse;width:100%}
-th,td{text-align:left;padding:.28rem .4rem;border-bottom:1px solid var(--line);vertical-align:top}
-th{color:var(--dim);font-weight:500;font-size:11px;letter-spacing:.06em;text-transform:uppercase}
-tr:hover td{background:#141920}
-.row{display:flex;gap:.5rem;align-items:center;flex-wrap:wrap}
-.grid2{display:grid;grid-template-columns:1fr 1fr;gap:1rem}
-.card{background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:.7rem .8rem}
-.tag{display:inline-block;padding:0 .35rem;border-radius:3px;font-size:11px;border:1px solid var(--line)}
-.s-open{color:var(--accent)} .s-running{color:var(--warn)}
-.s-done,.s-confirmed,.s-met,.s-achieved{color:var(--ok)}
-.s-exhausted,.s-blocked,.s-stopped,.s-failed,.s-abandoned{color:var(--bad)}
-.muted{color:var(--dim)}
-pre{white-space:pre-wrap;word-break:break-word;background:#10141a;border:1px solid var(--line);
-    border-radius:4px;padding:.5rem;max-height:22rem;overflow:auto;margin:.3rem 0}
-.tabs{display:flex;gap:.3rem;margin:.9rem 0 .2rem}
-.tabs button{border-radius:4px 4px 0 0;border-bottom-color:transparent}
-.tabs button.on{background:#1d2634;border-color:#2f4a6d;color:#fff}
-.hint{color:var(--dim);font-size:11px}
-@media(max-width:820px){main{grid-template-columns:1fr}nav{border-right:0;border-bottom:1px solid var(--line)}}
-</style></head>
-<body>
-<header>
-  <h1>DEWAGUARD TITAN</h1>
-  <span class="stat">task <b id="hTask">-</b></span>
-  <span class="stat">status <b id="hStatus">-</b></span>
-  <span class="stat">round <b id="hRound">0</b></span>
-  <span class="stat">coverage <b id="hCov">0%</b></span>
-  <span class="stat">findings <b id="hFind">0</b></span>
-  <span id="hLive" class="muted"></span>
-</header>
-<main>
-  <nav>
-    <div class="row" style="margin-bottom:.5rem">
-      <button class="pri" onclick="showNew()">+ task</button>
-      <button onclick="loadTasks()">refresh</button>
-    </div>
-    <div id="tasks"></div>
-  </nav>
-  <section id="main"><p class="muted">Select or create a task.</p></section>
-</main>
-<script>
-const $ = s => document.querySelector(s);
-const esc = s => String(s === null || s === undefined ? '' : s)
-  .replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
-let S = {tasks: [], task: 0, data: null, tab: 'overview', timer: null, view: 'task'};
-
-async function api(path, body) {
-  const opts = body === undefined ? {} : {method:'POST',
-    headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)};
-  const r = await fetch(path, opts);
-  const txt = await r.text();
-  let j; try { j = JSON.parse(txt); } catch (e) { j = {error: txt}; }
-  if (!r.ok && !j.error) j.error = 'HTTP ' + r.status;
-  return j;
-}
-
-async function loadTasks() {
-  const j = await api('/api/tasks');
-  S.tasks = j.tasks || [];
-  const el = $('#tasks');
-  if (!el) return;
-  el.innerHTML = S.tasks.map(t => `
-    <div class="task ${t.id === S.task ? 'on' : ''}" onclick="selectTask(${t.id})">
-      <span class="t">#${t.id} ${esc(t.title || t.goal)}</span>
-      <span class="m">${esc(t.status)} &middot; ${t.round_no}r</span>
-    </div>`).join('') || '<p class="muted" style="padding:.4rem">no tasks</p>';
-}
-
-async function selectTask(id) {
-  S.task = id; S.view = 'task';
-  await loadTasks();
-  await refresh(true);
-  clearInterval(S.timer);
-  S.timer = setInterval(() => refresh(false), 2000);
-}
-
-async function refresh(force) {
-  if (!S.task || S.view !== 'task') return;
-  const j = await api('/api/state?task=' + S.task);
-  if (j.error) { $('#main').innerHTML = '<p class="s-failed">' + esc(j.error) + '</p>'; return; }
-  S.data = j;
-  $('#hTask').textContent = '#' + j.task.id;
-  $('#hStatus').textContent = j.task.status;
-  $('#hStatus').className = 's-' + j.task.status;
-  $('#hRound').textContent = j.overview.round;
-  $('#hCov').textContent = j.overview.coverage.pct + '%';
-  $('#hFind').textContent = j.overview.findings_total;
-  $('#hLive').textContent = j.running ? 'running' : '';
-  $('#hLive').className = j.running ? 's-running' : 'muted';
-  render();
-}
-
-function render() {
-  if (S.view === 'new') return;
-  const d = S.data; if (!d) return;
-  const ov = d.overview;
-  const tabs = ['overview','intents','facts','findings','assets','activity','graph'];
-  const head = `
-    <h2>#${d.task.id} ${esc(d.task.title)}</h2>
-    <div class="muted">${esc(d.task.goal)}</div>
-    <div class="row" style="margin:.7rem 0">
-      <label class="hint">rounds <input id="rRounds" style="width:5rem" value="${Math.max(5, d.task.round_no || 10)}"></label>
-      <label class="hint">workers <input id="rWorkers" style="width:4rem" value="2"></label>
-      <button class="pri" onclick="runTask()" ${d.running ? 'disabled' : ''}>${d.running ? 'running...' : 'run'}</button>
-      <button class="danger" onclick="stopTask()" ${d.running ? '' : 'disabled'}>stop</button>
-      <button onclick="exportMd()">export .md</button>
-      <span class="muted">${ov.facts_total} facts &middot; ${ov.findings_total} findings &middot;
-      coverage ${ov.coverage.pct}% (${ov.coverage.tested}/${ov.coverage.assets})</span>
-    </div>
-    <div class="tabs">${tabs.map(t => `<button class="${t===S.tab?'on':''}" onclick="setTab('${t}')">${t}</button>`).join('')}</div>
-    <div id="pane"></div>`;
-  $('#main').innerHTML = head;
-  const pane = $('#pane');
-  if (S.tab === 'overview') pane.innerHTML = tabOverview(d);
-  if (S.tab === 'intents') pane.innerHTML = tabIntents(d);
-  if (S.tab === 'facts') pane.innerHTML = tabFacts(d);
-  if (S.tab === 'findings') pane.innerHTML = tabFindings(d);
-  if (S.tab === 'assets') pane.innerHTML = tabAssets(d);
-  if (S.tab === 'activity') pane.innerHTML = tabActivity(d);
-  if (S.tab === 'graph') pane.innerHTML = tabGraph(d);
-}
-
-function setTab(t) { S.tab = t; render(); }
-
-function intentRow(i) {
-  return `<div class="row" style="align-items:flex-start;margin-bottom:.25rem">
-    <span class="tag s-${esc(i.state)}">${esc(i.state)}</span>
-    <span style="flex:1">#${i.id} ${esc(i.summary)}</span>
-    ${i.state === 'running'
-      ? `<button onclick="steer(${i.id})">steer</button><button class="danger" onclick="kill(${i.id})">kill</button>`
-      : ''}
-  </div>`;
-}
-
-function tabOverview(d) {
-  const ov = d.overview;
-  const queue = [...ov.running_intents, ...ov.open_intents];
-  return `
-  <div class="grid2">
-    <div class="card"><h3 style="margin-top:0">goals</h3>
-      ${ov.goals.map(g => `<div class="row"><span class="tag s-${esc(g.state)}">${esc(g.state)}</span>
-        <span>${esc(g.text)}</span></div>`).join('') || '<span class="muted">none</span>'}
-      <h3>constraints</h3>
-      ${ov.constraints.map(c => `<div><span class="tag">${esc(c.kind)}</span> ${esc(c.text)}</div>`).join('') || '<span class="muted">none</span>'}
-    </div>
-    <div class="card"><h3 style="margin-top:0">queue</h3>
-      ${queue.map(intentRow).join('') || '<span class="muted">idle</span>'}
-      <h3>hint</h3>
-      <textarea id="hintText" placeholder="operator hint for the next planning rounds"></textarea>
-      <div class="row" style="margin-top:.35rem"><button onclick="addHint()">queue hint</button></div>
-    </div>
-  </div>`;
-}
-
-function tabIntents(d) {
-  const ov = d.overview;
-  const all = [...ov.running_intents, ...ov.open_intents, ...ov.recent_done];
-  if (!all.length) return '<p class="muted">no intents yet</p>';
-  return `<table><tr><th>state</th><th>id</th><th>summary</th><th>assets</th><th></th></tr>
-    ${all.map(i => `<tr><td class="s-${esc(i.state)}">${esc(i.state)}</td><td>${i.id}</td>
-      <td>${esc(i.summary)}<div class="hint">${esc(i.blocked_reason || '')}</div></td>
-      <td>${(i.asset_ids || []).join(', ')}</td>
-      <td>${i.state === 'running' ? `<button onclick="steer(${i.id})">steer</button>
-        <button class="danger" onclick="kill(${i.id})">kill</button>` : ''}</td></tr>`).join('')}
-    </table>`;
-}
-
-function tabFacts(d) {
-  const f = d.overview.recent_facts;
-  if (!f.length) return '<p class="muted">no facts yet</p>';
-  return `<table><tr><th>id</th><th>summary</th><th>source</th><th>confidence</th><th>from</th></tr>
-    ${f.map(x => `<tr><td>${x.id}</td><td>${esc(x.summary)}</td>
-      <td class="muted">${esc(x.source || '')}</td><td class="muted">${esc(x.confidence || '')}</td>
-      <td class="muted">${esc(x.from_intent || '')}</td></tr>`).join('')}</table>
-    <p class="hint">newest ${f.length}</p>`;
-}
-
-function tabFindings(d) {
-  if (!d.findings.length) return '<p class="muted">no findings</p>';
-  return d.findings.map(f => `<div class="card" style="margin-bottom:.6rem">
-    <div class="row"><span class="tag">${esc(f.severity)}</span>
-      <b>${esc(f.vulnclass)}</b> <span class="muted">#${f.id} &middot; ${esc(f.proof_basis)} &middot; ${esc(f.status)}</span></div>
-    <div>${esc(f.summary)}</div>
-    <div class="hint">endpoint ${esc(f.endpoint || '-')} &middot; param ${esc(f.parameter || '-')} &middot; traffic ${esc(JSON.stringify(f.traffic_refs))}</div>
-    ${f.evidence ? `<pre>${esc(f.evidence)}</pre>` : ''}
-    ${f.poc ? `<pre>${esc(f.poc)}</pre>` : ''}</div>`).join('');
-}
-
-function tabAssets(d) {
-  if (!d.assets.length) return '<p class="muted">no assets yet</p>';
-  return `<table><tr><th>id</th><th>type</th><th>key</th><th>status</th><th>tech</th></tr>
-    ${d.assets.map(a => `<tr><td>${a.id}</td><td>${esc(a.type)}</td>
-      <td>${esc(a.url || a.domain || a.ip || a.app_name || '')}</td>
-      <td>${a.status_code || ''}</td><td class="muted">${esc((a.technologies || []).join(' '))}</td></tr>`).join('')}
-    </table>`;
-}
-
-function tabActivity(d) {
-  if (!d.activity.length) return '<p class="muted">no activity yet</p>';
-  return `<table><tr><th>id</th><th>worker</th><th>kind</th><th>summary</th></tr>
-    ${d.activity.map(a => `<tr><td>${a.id}</td><td class="muted">${esc(a.worker || '')}</td>
-      <td class="muted">${esc(a.kind || '')}</td><td>${esc(a.summary || '')}</td></tr>`).join('')}</table>`;
-}
-
-function tabGraph(d) { return `<pre>${esc(JSON.stringify(d.overview, null, 1))}</pre>`; }
-
-function showNew() {
-  S.view = 'new'; S.task = 0; clearInterval(S.timer);
-  $('#main').innerHTML = `
-    <h2>New engagement</h2>
-    <div class="card" style="max-width:52rem">
-      <div class="hint">goal - the end state you must prove, not a task list</div>
-      <textarea id="nGoal" placeholder="Find and prove the highest-impact unauthenticated entry point on app.example.com"></textarea>
-      <div class="hint" style="margin-top:.5rem">scope - one per line, kind=value (domain, url, ip, cidr, keyword)</div>
-      <textarea id="nScope" placeholder="domain=example.com"></textarea>
-      <div class="row" style="margin-top:.5rem">
-        <input id="nTitle" placeholder="title (optional)" style="flex:1">
-        <button class="pri" onclick="createTask()">create</button>
-        <button onclick="cancelNew()">cancel</button>
-      </div>
-      <div id="nMsg" class="hint" style="margin-top:.5rem"></div>
-    </div>`;
-}
-
-function cancelNew() {
-  S.view = 'task';
-  if (S.tasks.length) selectTask(S.tasks[0].id); else location.reload();
-}
-
-async function createTask() {
-  const goal = $('#nGoal').value.trim();
-  if (!goal) { $('#nMsg').textContent = 'goal is required'; return; }
-  const scope = $('#nScope').value.split('\n').map(l => l.trim()).filter(Boolean).map(l => {
-    const i = l.indexOf('=');
-    return i < 0 ? {kind:'domain', value:l} : {kind:l.slice(0,i).trim(), value:l.slice(i+1).trim()};
-  });
-  const j = await api('/api/task', {goal: goal, title: $('#nTitle').value.trim(), scope: scope});
-  if (j.error) { $('#nMsg').textContent = j.error; return; }
-  await loadTasks(); selectTask(j.task);
-}
-
-async function runTask() {
-  const rounds = parseInt($('#rRounds').value || '10', 10);
-  const workers = parseInt($('#rWorkers').value || '2', 10);
-  const j = await api('/api/run', {task: S.task, rounds: rounds, workers: workers});
-  if (j.error) alert(j.error);
-  setTimeout(() => refresh(true), 300);
-}
-
-async function stopTask() {
-  const j = await api('/api/stop', {task: S.task});
-  if (j.error) alert(j.error);
-  await refresh(true);
-}
-
-async function addHint() {
-  const text = $('#hintText').value.trim(); if (!text) return;
-  const j = await api('/api/hint', {task: S.task, text: text});
-  if (j.error) alert(j.error); else { $('#hintText').value = ''; refresh(true); }
-}
-
-async function steer(id) {
-  const msg = prompt('course correction for intent #' + id); if (!msg) return;
-  const j = await api('/api/steer', {task: S.task, intent: id, message: msg});
-  if (j.error) alert(j.error);
-}
-
-async function kill(id) {
-  if (!confirm('stop intent #' + id + '?')) return;
-  const j = await api('/api/kill', {task: S.task, intent: id, reason: 'operator'});
-  if (j.error) alert(j.error);
-}
-
-function exportMd() { window.location = '/api/export?task=' + S.task; }
-
-loadTasks().then(() => { if (S.tasks.length) selectTask(S.tasks[0].id); });
-</script></body></html>
-"""
 
 
 def _json_bytes(obj) -> bytes:
     return json.dumps(obj, ensure_ascii=False).encode()
 
 
+def _settings_payload(settings, store: Store) -> dict:
+    s = store.settings()
+    key = load_api_key(settings)
+    return {
+        "llm": {
+            "base_url": s.get("llm.base_url") or settings.base_url,
+            "model": s.get("llm.model") or settings.model,
+            "timeout": int(s.get("llm.timeout") or settings.request_timeout),
+            "max_tokens": int(s.get("llm.max_tokens") or settings.max_tokens),
+            "temperature": float(s.get("llm.temperature") or settings.temperature),
+            "key_masked": mask(key),
+            "key_source": key_source(settings),
+        },
+        "run": {
+            "rps": s.get("run.rps") or str(settings.rps),
+            "max_workers": s.get("run.max_workers") or str(settings.max_workers),
+            "noise_profile": s.get("run.noise_profile") or settings.noise_profile,
+        },
+    }
+
+
 def serve(settings, task_id: int = 0) -> int:
     store = Store(settings.db_path)
     engine = Engine(settings, store=store)
+    skills = SkillIndex(settings.skill_dir)
     running: dict[int, threading.Thread] = {}
     lock = threading.Lock()
     token = settings.console_token
@@ -351,10 +66,9 @@ def serve(settings, task_id: int = 0) -> int:
         def log_message(self, *a):
             pass
 
+        # ---------------------------------------------------------------- plumbing
         def _auth_ok(self) -> bool:
-            if not token:
-                return True
-            return self.headers.get("X-Titan-Token", "") == token
+            return not token or self.headers.get("X-Titan-Token", "") == token
 
         def _send(self, code: int, body: bytes, ctype: str):
             self.send_response(code)
@@ -380,21 +94,29 @@ def serve(settings, task_id: int = 0) -> int:
             except ValueError:
                 return {}
 
+        def _tid(self, q) -> int:
+            return int((q.get("task") or [task_id or 0])[0] or 0)
+
         # ---------------------------------------------------------------- GET
         def do_GET(self):  # noqa: N802
             u = urlparse(self.path)
             q = parse_qs(u.query)
             if not self._auth_ok():
                 return self._json({"error": "unauthorised"}, 401)
+            try:
+                return self._get(u.path, q)
+            except Exception as e:  # noqa: BLE001 - never 500 without a message
+                return self._json({"error": f"{type(e).__name__}: {e}"}, 500)
 
-            if u.path == "/":
+        def _get(self, path: str, q):
+            if path == "/":
                 return self._html(GUI)
 
-            if u.path == "/api/tasks":
+            if path == "/api/tasks":
                 return self._json({"tasks": [dict(r) for r in store.list_tasks(50)]})
 
-            if u.path == "/api/state":
-                tid = int((q.get("task") or [task_id or 0])[0] or 0)
+            if path == "/api/state":
+                tid = self._tid(q)
                 if not store.get_task(tid):
                     return self._json({"error": f"no task {tid}"}, 404)
                 with lock:
@@ -408,7 +130,59 @@ def serve(settings, task_id: int = 0) -> int:
                     "running": is_running,
                 })
 
-            if u.path == "/api/export":
+            if path == "/api/agents":
+                tid = self._tid(q)
+                return self._json({
+                    "live": engine.live_snapshot(tid),
+                    "usage": store.agent_usage(tid),
+                    "activity": list(reversed(store.activity(tid, 40))),
+                })
+
+            if path == "/api/graph":
+                tid = self._tid(q)
+                if not store.get_task(tid):
+                    return self._json({"error": f"no task {tid}"}, 404)
+                return self._json(store.graph_data(tid))
+
+            if path == "/api/node":
+                nid = int((q.get("id") or [0])[0] or 0)
+                d = store.node_detail(nid)
+                return self._json(d or {"error": f"no node {nid}"}, 200 if d else 404)
+
+            if path == "/api/skills":
+                return self._json({"skills": [
+                    {"name": k, "description": v.description, "path": str(v.path)}
+                    for k, v in sorted(skills.skills.items())]})
+
+            if path == "/api/skill":
+                name = (q.get("name") or [""])[0]
+                return self._json({"name": name, "body": skills.read(name)})
+
+            if path == "/api/traffic":
+                tid = self._tid(q)
+                return self._json({"traffic": store.traffic_list(
+                    tid, (q.get("q") or [""])[0], 100)})
+
+            if path == "/api/traffic_one":
+                t = store.traffic(int((q.get("id") or [0])[0] or 0))
+                if not t:
+                    return self._json({"error": "no such record"}, 404)
+                t["resp_body"] = (t.get("resp_body") or "")[:40000]
+                t["req_body"] = (t.get("req_body") or "")[:4000]
+                return self._json(t)
+
+            if path == "/api/settings":
+                return self._json(_settings_payload(settings, store))
+
+            if path == "/api/models":
+                url = (q.get("url") or [settings.base_url])[0]
+                key = (q.get("key") or [load_api_key(settings)])[0]
+                try:
+                    return self._json({"models": list_models(url, key)})
+                except LLMError as e:
+                    return self._json({"error": str(e)}, 400)
+
+            if path == "/api/export":
                 tid = int((q.get("task") or [0])[0] or 0)
                 if not store.get_task(tid):
                     return self._json({"error": "no task"}, 404)
@@ -430,24 +204,68 @@ def serve(settings, task_id: int = 0) -> int:
             if not self._auth_ok():
                 return self._json({"error": "unauthorised"}, 401)
             body = self._body()
+            try:
+                return self._post(u.path, body)
+            except Exception as e:  # noqa: BLE001
+                return self._json({"error": f"{type(e).__name__}: {e}"}, 500)
 
-            if u.path == "/api/task":
+        def _post(self, path: str, body: dict):
+            if path == "/api/settings":
+                llm = body.get("llm") or {}
+                run = body.get("run") or {}
+                pairs = {
+                    "llm.base_url": llm.get("base_url"),
+                    "llm.model": llm.get("model"),
+                    "llm.timeout": llm.get("timeout"),
+                    "llm.max_tokens": llm.get("max_tokens"),
+                    "llm.temperature": llm.get("temperature"),
+                    "run.rps": run.get("rps"),
+                    "run.max_workers": run.get("max_workers"),
+                    "run.noise_profile": run.get("noise_profile"),
+                }
+                for k, v in pairs.items():
+                    if v is not None and str(v) != "":
+                        store.set_setting(k, str(v))
+                new_key = str(body.get("api_key") or "").strip()
+                if new_key:
+                    save_api_key(settings, new_key)
+                engine.reload_llm()
+                engine.apply_runtime_settings()
+                return self._json(_settings_payload(settings, store))
+
+            if path == "/api/settings/test":
+                base = str(body.get("base_url") or "").strip() or settings.base_url
+                model = str(body.get("model") or "").strip() or settings.model
+                key = str(body.get("api_key") or "").strip() or load_api_key(settings)
+                if not model:
+                    return self._json({"error": "model is required"}, 400)
+                t0 = time.time()
+                try:
+                    reply = LLM(base, model, key, 60, 32).chat(
+                        [{"role": "user", "content": "Say exactly: ok"}])
+                except LLMError as e:
+                    return self._json({"error": str(e)}, 400)
+                return self._json({
+                    "ok": True,
+                    "latency_ms": int((time.time() - t0) * 1000),
+                    "reply": (reply.content or "").strip()[:120],
+                    "tokens_in": reply.tokens_in, "tokens_out": reply.tokens_out,
+                })
+
+            if path == "/api/task":
                 goal = str(body.get("goal") or "").strip()
                 if not goal:
                     return self._json({"error": "goal is required"}, 400)
+                if not engine.llm_config()["model"]:
+                    return self._json({"error": "no model configured: open Settings and "
+                                                "set the endpoint + model"}, 400)
                 scope = [s for s in (body.get("scope") or [])
                          if isinstance(s, dict) and s.get("value")]
-                if not settings.model:
-                    return self._json({"error": "no model configured: set TITAN_LLM_MODEL and "
-                                                "TITAN_LLM_BASE_URL (see titan doctor)"}, 400)
-                try:
-                    tid = engine.new_task(goal, str(body.get("title") or ""),
-                                          str(body.get("desc") or ""), scope)
-                except Exception as e:  # noqa: BLE001
-                    return self._json({"error": f"{type(e).__name__}: {e}"}, 500)
+                tid = engine.new_task(goal, str(body.get("title") or ""),
+                                      str(body.get("desc") or ""), scope)
                 return self._json({"task": tid})
 
-            if u.path == "/api/run":
+            if path == "/api/run":
                 tid = int(body.get("task") or 0)
                 if not store.get_task(tid):
                     return self._json({"error": f"no task {tid}"}, 404)
@@ -468,14 +286,14 @@ def serve(settings, task_id: int = 0) -> int:
                     t.start()
                 return self._json({"started": tid})
 
-            if u.path == "/api/stop":
+            if path == "/api/stop":
                 tid = int(body.get("task") or 0)
                 if not store.get_task(tid):
                     return self._json({"error": "no task"}, 404)
                 engine.request_stop(tid)
                 return self._json({"stopping": tid})
 
-            if u.path == "/api/hint":
+            if path == "/api/hint":
                 tid = int(body.get("task") or 0)
                 text = str(body.get("text") or "").strip()
                 if not (store.get_task(tid) and text):
@@ -483,7 +301,7 @@ def serve(settings, task_id: int = 0) -> int:
                 nid = store.add_node(tid, "hint", {"text": text}, origin="operator")
                 return self._json({"hint": nid})
 
-            if u.path == "/api/steer":
+            if path == "/api/steer":
                 tid = int(body.get("task") or 0)
                 iid = int(body.get("intent") or 0)
                 msg = str(body.get("message") or "").strip()
@@ -493,16 +311,37 @@ def serve(settings, task_id: int = 0) -> int:
                 store.log(tid, "operator", "steer", f"intent {iid}: {msg}")
                 return self._json({"steered": bool(ok), "intent": iid})
 
-            if u.path == "/api/kill":
+            if path == "/api/kill":
                 tid = int(body.get("task") or 0)
                 iid = int(body.get("intent") or 0)
                 ok = engine.kill(iid, str(body.get("reason") or "operator"))
                 store.log(tid, "operator", "kill", f"intent {iid}")
                 return self._json({"stopping": bool(ok), "intent": iid})
 
+            if path == "/api/finding":
+                fid = int(body.get("id") or 0)
+                status = str(body.get("status") or "")
+                if not store.set_finding_status(fid, status):
+                    return self._json({"error": f"cannot set finding {fid} to {status!r}"}, 400)
+                return self._json({"finding": fid, "status": status})
+
+            if path == "/api/scope":
+                tid = int(body.get("task") or 0)
+                kind = str(body.get("kind") or "").strip()
+                value = str(body.get("value") or "").strip()
+                if not (store.get_task(tid) and kind and value):
+                    return self._json({"error": "task, kind and value required"}, 400)
+                store.add_scope(tid, kind, value, "operator")
+                return self._json({"scope": store.scope(tid)})
+
             return self._json({"error": "not found"}, 404)
 
-    srv = ThreadingHTTPServer((settings.console_bind, settings.console_port), H)
+    try:
+        srv = ThreadingHTTPServer((settings.console_bind, settings.console_port), H)
+    except OSError as e:
+        raise SystemExit(f"cannot bind {settings.console_bind}:{settings.console_port} "
+                         f"({e}). Another 'titan serve' may still be running: "
+                         f"check with: ss -ltnp | grep {settings.console_port}") from e
     url = f"http://{settings.console_bind}:{settings.console_port}"
     print(f"Dewaguard Titan console: {url}  (Ctrl-C to stop)")
     if external:

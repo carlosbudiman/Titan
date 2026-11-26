@@ -19,6 +19,8 @@ import tempfile
 import threading
 import time
 import unittest
+import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 
@@ -42,6 +44,18 @@ class FakeProvider:
         class H(http.server.BaseHTTPRequestHandler):
             def log_message(self, *a):
                 pass
+
+            def do_GET(self):  # noqa: N802
+                if self.path.rstrip("/").endswith("/models"):
+                    body = json.dumps({"object": "list", "data": [
+                        {"id": "fake-model"}, {"id": "fake-model-mini"}]}).encode()
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/json")
+                    self.send_header("Content-Length", str(len(body)))
+                    self.end_headers()
+                    self.wfile.write(body)
+                else:
+                    self.send_error(404)
 
             def do_POST(self):  # noqa: N802
                 n = int(self.headers.get("Content-Length") or 0)
@@ -200,6 +214,110 @@ class CliTest(unittest.TestCase):
             with self.assertRaises(urllib.error.HTTPError) as ctx:
                 urllib.request.urlopen(base + "/api/state?task=999", timeout=2)
             self.assertEqual(ctx.exception.code, 404)
+        finally:
+            proc.terminate()
+            proc.wait(timeout=10)
+
+
+    def test_setup_persists_without_storing_the_key_in_the_db(self):
+        self.provider.replies = [{"role": "assistant", "content": "ok"}]
+        key = "sk-test-0123456789abcdef"
+        env = self.env()
+        env.pop("TITAN_LLM_API_KEY", None)          # so the file is the only source
+        p = subprocess.run([sys.executable, str(TITAN), "setup",
+                            "--url", self.provider.url, "--model", "fake-model",
+                            "--api-key-stdin", "--no-test"],
+                           input=key + "\n", capture_output=True, text=True, env=env,
+                           timeout=60)
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        self.assertIn("fake-model", p.stdout)
+        self.assertNotIn(key, p.stdout)             # never echoed
+
+        home = self.tmp / "home"
+        secrets = home / "secrets.json"
+        self.assertTrue(secrets.exists())
+        self.assertEqual(secrets.stat().st_mode & 0o777, 0o600)
+        self.assertEqual(json.loads(secrets.read_text())["llm_api_key"], key)
+
+        db = sqlite3.connect(home / "titan.db")
+        rows = db.execute("SELECT key,value FROM settings").fetchall()
+        db.close()
+        self.assertIn(("llm.model", "fake-model"), rows)
+        self.assertNotIn(key, json.dumps(rows))     # the key is not in the database
+
+        out = subprocess.run([sys.executable, str(TITAN), "setup", "--show"], env=env,
+                             capture_output=True, text=True, timeout=30).stdout
+        self.assertIn("sk-t", out)
+        self.assertNotIn(key, out)
+        self.assertIn("0600", out)
+
+    def test_console_settings_agents_graph_skills(self):
+        self.provider.replies = [{"role": "assistant", "content": json.dumps(
+            {"goals": ["noop"], "constraints": []})}]
+        self.titan("new", "console surfaces", "--scope", "domain=example.com")
+        env = self.env()
+        env["TITAN_CONSOLE_PORT"] = "19888"
+        proc = subprocess.Popen([sys.executable, str(TITAN), "serve"], env=env,
+                                stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        base = "http://127.0.0.1:19888"
+
+        def get(path):
+            with urllib.request.urlopen(base + path, timeout=5) as r:
+                return json.loads(r.read().decode())
+
+        def post(path, payload):
+            req = urllib.request.Request(base + path, method="POST",
+                                         data=json.dumps(payload).encode(),
+                                         headers={"Content-Type": "application/json"})
+            with urllib.request.urlopen(req, timeout=30) as r:
+                return json.loads(r.read().decode())
+
+        try:
+            for _ in range(50):
+                try:
+                    st = get("/api/settings")
+                    break
+                except OSError:
+                    time.sleep(0.1)
+
+            self.assertEqual(st["llm"]["model"], "fake-model")
+            self.assertNotIn("sk-test", json.dumps(st))       # only masked
+            self.assertIn("key_masked", st["llm"])
+
+            st2 = post("/api/settings", {"llm": {"base_url": self.provider.url,
+                                                 "model": "fake-model-mini"},
+                                         "run": {"rps": "3", "noise_profile": "quiet"}})
+            self.assertEqual(st2["llm"]["model"], "fake-model-mini")
+            self.assertEqual(st2["run"]["rps"], "3")
+
+            models = get("/api/models?url=" + urllib.parse.quote(self.provider.url, safe=""))
+            self.assertIn("fake-model", models["models"])
+
+            test = post("/api/settings/test", {"base_url": self.provider.url,
+                                               "model": "fake-model-mini"})
+            self.assertTrue(test["ok"])
+
+            agents = get("/api/agents?task=1")
+            self.assertIn("live", agents)
+            self.assertIn("usage", agents)
+
+            graph = get("/api/graph?task=1")
+            self.assertTrue(any(n["kind"] == "goal" for n in graph["nodes"]))
+            node = get("/api/node?id=" + str(graph["nodes"][0]["id"]))
+            self.assertIn("kind", node)
+
+            skills = get("/api/skills")["skills"]
+            self.assertIn("php2shell", [s["name"] for s in skills])
+            body = get("/api/skill?name=php2shell")["body"]
+            self.assertIn("session.upload_progress", body)
+
+            page = urllib.request.urlopen(base + "/", timeout=5).read().decode()
+            for view in ("DEWAGUARD TITAN", "settings", "agents", "skills", "traffic"):
+                self.assertIn(view, page)
+
+            with self.assertRaises(urllib.error.HTTPError) as ctx:
+                post("/api/finding", {"id": 999, "status": "nope"})
+            self.assertEqual(ctx.exception.code, 400)
         finally:
             proc.terminate()
             proc.wait(timeout=10)

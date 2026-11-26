@@ -15,6 +15,7 @@ from pathlib import Path
 from .agents import (GOALS_PROMPT, PLANNER_PROMPT, TRAFFIC_BLOCK, WORKER_PROMPT,
                      constraints_block, noise_block, parse_json_block, render, run_loop)
 from .guard import Guard, Pacer, Scope
+from .config import load_api_key
 from .llm import LLM, MockLLM, Reply
 from .skills import SkillIndex
 from .store import Store
@@ -27,9 +28,9 @@ class Engine:
         self.settings = settings
         self.settings.ensure_dirs()
         self.store = store or Store(settings.db_path)
-        self.llm = llm or LLM(settings.base_url, settings.model, settings.api_key,
-                              settings.request_timeout, settings.max_tokens,
-                              settings.temperature)
+        self._llm_override = llm
+        self.llm = None
+        self.reload_llm()
         self.skills = skills or SkillIndex(settings.skill_dir)
         self.skills.register(self.store)
         self.registry = Registry(self.skills)
@@ -41,6 +42,76 @@ class Engine:
         self.stop_flags: dict[int, threading.Event] = {}
         self.lock = threading.Lock()
         self.stalls = 0
+        self.live: dict[str, dict] = {}
+        self.live_lock = threading.Lock()
+        self._live_task: dict[str, int] = {}
+
+    # ------------------------------------------------------------------ llm config
+    def llm_config(self) -> dict:
+        """DB settings win over env, so the GUI can reconfigure without a restart."""
+        s = self.store.settings()
+
+        def pick(key, fallback):
+            v = s.get(key)
+            return fallback if v is None or v == "" else v
+
+        return {
+            "base_url": pick("llm.base_url", self.settings.base_url),
+            "model": pick("llm.model", self.settings.model),
+            "api_key": load_api_key(self.settings),
+            "timeout": int(pick("llm.timeout", self.settings.request_timeout)),
+            "max_tokens": int(pick("llm.max_tokens", self.settings.max_tokens)),
+            "temperature": float(pick("llm.temperature", self.settings.temperature)),
+        }
+
+    def reload_llm(self) -> None:
+        if self._llm_override is not None:
+            self.llm = self._llm_override
+            return
+        cfg = self.llm_config()
+        self.llm = LLM(cfg["base_url"], cfg["model"], cfg["api_key"], cfg["timeout"],
+                       cfg["max_tokens"], cfg["temperature"])
+
+    def apply_runtime_settings(self) -> None:
+        """Pacing/limits from the settings page, refreshed at the start of a run."""
+        s = self.store.settings()
+        if s.get("run.rps"):
+            try:
+                self.settings.rps = float(s["run.rps"])
+                self.pacer = Pacer(self.settings.rps, self.settings.max_per_host)
+            except ValueError:
+                pass
+        if s.get("run.noise_profile"):
+            self.settings.noise_profile = s["run.noise_profile"]
+        if s.get("run.max_workers"):
+            try:
+                self.settings.max_workers = max(1, min(int(s["run.max_workers"]), 8))
+            except ValueError:
+                pass
+
+    # ------------------------------------------------------------------ live agents
+    def live_update(self, key: str, **fields) -> None:
+        task_id = fields.pop("task", None)
+        if task_id:
+            self._live_task[key] = task_id
+        task_id = task_id or self._live_task.get(key, 0)
+        if not task_id:
+            return
+        turn = bool(fields.pop("turn", False))
+        try:
+            self.store.agent_upsert(key, task_id, turn=turn, **fields)
+        except Exception:  # noqa: BLE001 - telemetry must never break a run
+            pass
+
+    def live_drop(self, key: str) -> None:
+        self._live_task.pop(key, None)
+        try:
+            self.store.agent_drop(key)
+        except Exception:  # noqa: BLE001
+            pass
+
+    def live_snapshot(self, task_id: int = 0) -> list[dict]:
+        return self.store.agents(task_id)
 
     # ------------------------------------------------------------------ run control
     def request_stop(self, task_id: int) -> None:
@@ -149,8 +220,26 @@ class Engine:
         def log(kind, text):
             self.store.log(task_id, "planner", kind, text[:2000])
 
-        final = run_loop(self.llm, self.registry, "planner", system, user, ctx, guard,
-                         self.settings.planner_turns, log=log)
+        lk = "planner"
+        model = getattr(self.llm, "name", "")
+        self.live_update(lk, role="planner", task=task_id, state="thinking", tool=None,
+                         model=model, intent=None, note="planning")
+
+        def step(kind, p):
+            if kind == "llm":
+                self.live_update(lk, state="thinking", note=p.get("note"),
+                                 turn=p.get("turn"), tokens_in=p.get("tokens_in"),
+                                 tokens_out=p.get("tokens_out"))
+            elif kind == "tool_start":
+                self.live_update(lk, state="tool", tool=p.get("tool"), note=p.get("args"))
+            elif kind == "tool_end":
+                self.live_update(lk, state="thinking", tool=p.get("tool"), note=p.get("note"))
+
+        try:
+            final = run_loop(self.llm, self.registry, "planner", system, user, ctx, guard,
+                             self.settings.planner_turns, log=log, step=step)
+        finally:
+            self.live_update(lk, state="idle", tool=None, note="round finished")
         after = self.store.pending_intents(task_id)
         return final, max(0, after - before)
 
@@ -197,10 +286,25 @@ class Engine:
 
         facts_before = self._yield_count(iid)
         status, note = "done", ""
+        lk = f"w{iid}"
+        self.live_update(lk, role="worker", task=task_id, intent=iid, state="thinking",
+                         tool=None, model=getattr(self.llm, "name", ""),
+                         note=summary[:120])
+
+        def step(kind, p):
+            if kind == "llm":
+                self.live_update(lk, state="thinking", note=p.get("note"),
+                                 turn=p.get("turn"), tokens_in=p.get("tokens_in"),
+                                 tokens_out=p.get("tokens_out"))
+            elif kind == "tool_start":
+                self.live_update(lk, state="tool", tool=p.get("tool"), note=p.get("args"))
+            elif kind == "tool_end":
+                self.live_update(lk, state="thinking", tool=p.get("tool"), note=p.get("note"))
+
         try:
             run_loop(self.llm, self.registry, "worker", system,
                      f"Execute this intent now: {summary}", ctx, guard,
-                     self.settings.worker_turns, poll=poll,
+                     self.settings.worker_turns, poll=poll, step=step,
                      log=lambda k, t: self.store.log(task_id, f"w{iid}", k, t[:2000], node_id=iid))
         except Exception as e:  # noqa: BLE001
             status, note = "blocked", f"worker error: {type(e).__name__}: {e}"
@@ -215,6 +319,7 @@ class Engine:
         with self.lock:
             self.inboxes.pop(iid, None)
             self.kill_flags.pop(iid, None)
+        self.live_drop(lk)
         self.emit(f"  [w{iid}] {status}: {summary[:100]}")
 
     def _yield_count(self, node_id: int) -> int:
@@ -231,6 +336,8 @@ class Engine:
         workers = max(1, workers or self.settings.max_workers)
         deadline = (time.time() + self.settings.task_deadline_s) if self.settings.task_deadline_s else 0
         self.clear_stop(task_id)
+        self.apply_runtime_settings()
+        self.reload_llm()
         self.emit(f"Titan task #{task_id}: {task['goal']}")
 
         for rnd in range(max(1, rounds)):

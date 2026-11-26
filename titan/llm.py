@@ -116,6 +116,29 @@ class LLM:
                      tokens_out=int(usage.get("completion_tokens") or 0), raw=body)
 
 
+def list_models(base_url: str, api_key: str = "", timeout: int = 15) -> list[str]:
+    """GET {base}/models, tolerating both OpenAI and Ollama response shapes."""
+    url = base_url.rstrip("/") + "/models"
+    headers = {"Accept": "application/json"}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+    req = urllib.request.Request(url, headers=headers)
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            data = json.loads(r.read().decode("utf-8", "replace"))
+    except urllib.error.HTTPError as e:
+        raise LLMError(f"HTTP {e.code} listing models at {url}") from e
+    except (urllib.error.URLError, TimeoutError, OSError) as e:
+        raise LLMError(f"cannot reach {url}: {e}") from e
+    items = data.get("data") or data.get("models") or []
+    out = []
+    for m in items:
+        mid = m.get("id") if isinstance(m, dict) else m
+        if mid:
+            out.append(str(mid))
+    return sorted(set(out))
+
+
 class MockLLM:
     """Deterministic provider for tests: a queue of scripted replies."""
 

@@ -98,8 +98,9 @@ Included (behavioural parity where it matters):
 - noise profile → concrete scanner rate flags in the prompt
 - traffic capture + evidence binding
 - hint / steer / kill, activity trail, token accounting, markdown export,
-  local web GUI (create/run/stop, per-intent steer and kill, hint box, both graphs,
-  report download)
+  local web GUI: create/run/stop, live agent cards, per-intent steer and kill,
+  settings page with model picker and connection test, skills browser, traffic
+  viewer, SVG graph of the exploration nodes, finding triage, report download
 
 Dropped on purpose (this is the "lightweight" part):
 
@@ -145,37 +146,68 @@ Optional editable install, only if something else needs `import titan`:
 python3 -m pip install --user -e .
 ```
 
-## Configure a model
+## Configure a model: `titan setup`
 
 Titan is model-agnostic: any endpoint that speaks OpenAI `/chat/completions` with
-function calling.
+function calling (Ollama, vLLM, LM Studio, DeepSeek, OpenRouter, an internal gateway).
 
 ```bash
-cp env.example ~/.titan/env     # edit, then source it (here or from your shell rc)
-source ~/.titan/env
+titan setup
 ```
 
-Minimal contents:
+Interactive, Hermes-style:
+
+```
+Dewaguard Titan 0.4.0 - model setup
+Press Enter to keep the value shown in brackets.
+
+base URL (OpenAI-compatible, e.g. http://127.0.0.1:11434/v1) [http://127.0.0.1:11434/v1]:
+api key (hidden; blank keeps the current one):
+endpoint reachable, 3 model(s) available
+   1. qwen2.5:14b
+   2. llama3.1:8b
+   3. nomic-embed-text
+model (number or id) [qwen2.5:14b]:
+advanced settings (timeout/max_tokens/temperature)? [y/N]:
+saved:
+  endpoint   http://127.0.0.1:11434/v1
+  model      qwen2.5:14b
+  settings   ~/.titan/titan.db (no secrets)
+  api key    sk-a...cdef (len 51) -> ~/.titan/secrets.json (0600)
+testing a real completion...
+  ok in 812 ms: ok
+```
+
+Where things are stored, and why:
+
+| Item | Location | Protection |
+|---|---|---|
+| endpoint, model, timeout, max_tokens, temperature, pacing | `~/.titan/titan.db` (`settings` table) | no secrets in it, safe to copy/back up |
+| API key | `~/.titan/secrets.json` | mode `0600`, written with `os.open(0o600)` + atomic rename |
+| key precedence | `TITAN_LLM_API_KEY` env > `secrets.json` | env wins, and `doctor` says so when both exist |
+
+The key is never written to the database, never printed (only `sk-a...cdef (len 51)`),
+and `titan setup --api-key-stdin` reads it from a pipe so it never lands in shell
+history.
+
+Non-interactive and inspection modes:
 
 ```bash
-export TITAN_LLM_BASE_URL=http://127.0.0.1:11434/v1    # Ollama
-export TITAN_LLM_MODEL=qwen2.5:14b
-
-# or a hosted API:
-# export TITAN_LLM_BASE_URL=https://api.deepseek.com/v1
-# export TITAN_LLM_MODEL=deepseek-chat
-# export TITAN_LLM_API_KEY=...
+titan setup --show                     # endpoint, model, masked key, pacing
+printf '%s' "$KEY" | titan setup --url https://api.deepseek.com/v1 \
+  --model deepseek-chat --api-key-stdin          # scripted, no history leak
 ```
 
-Verify before spending tokens:
+Environment variables still work and are the right choice for CI; everything in the
+settings table takes precedence over them except the key.
+
+Verify at any time:
 
 ```bash
 titan doctor
+# ... model qwen2.5:14b, endpoint ..., api key sk-a...cdef via file: ... (0600),
+#     llm probe ok (812 ms), status ready
 ```
-
-It checks the state dirs, the skill index, the endpoint and the key, and prints
-`status ready` (or exactly what is missing). A run with a dead endpoint now stops
-with a message instead of a traceback.
 
 ## First run
 
@@ -203,10 +235,23 @@ so `titan run 1` resumes where it stopped.
 titan serve            # http://127.0.0.1:9911
 ```
 
-Same process, no build step, no JavaScript dependencies. Create tasks, start/stop
-runs, steer or kill intents, queue hints, read findings, download the report. It is
-loopback-only: binding it elsewhere requires `TITAN_CONSOLE_TOKEN`, and then every
-request must carry `X-Titan-Token`.
+One process, no build step, no JavaScript dependencies, no external assets.
+
+| View | What it does |
+|---|---|
+| **task** | per-task detail: overview (goals, constraints, hints, queue), run/stop with rounds + workers, steer or kill a running intent, findings with severity/status editing and evidence, assets, traffic, activity, graph |
+| **agents** | live planner and worker cards: state (`thinking`/`tool`/`idle`/`stale`), current tool call, elapsed time, turn count, per-agent tokens; token usage table; recent step trail. Fed from `agent_state`, so runs started from the CLI are visible here too |
+| **settings** | model endpoint, model picker with **list models**, API key (write-only, masked), timeout/max tokens/temperature, pacing (rps, workers, noise profile), **test connection** with latency |
+| **skills** | all 11 skills with descriptions; click to read the full `SKILL.md` |
+| **traffic** | search recorded HTTP traffic by URL/body, inspect request headers and response body |
+
+The graph tab draws both graphs' exploration side as an SVG: nodes laid out
+left-to-right by provenance, coloured by kind (`begin`, `goal`, `intent`, `fact`,
+`finding`, `hint`), edges labelled `spawns`/`yields`/`proves`. Click a node for its
+full payload.
+
+It is loopback-only: binding off `127.0.0.1` is refused unless
+`TITAN_CONSOLE_TOKEN` is set, and then every request needs `X-Titan-Token`.
 
 ### All settings
 
@@ -218,7 +263,7 @@ request must carry `X-Titan-Token`.
 | `TITAN_SKILL_DIR` | `<repo>/skills` | skill root |
 | `TITAN_LLM_BASE_URL` | `http://127.0.0.1:11434/v1` | OpenAI-compatible base |
 | `TITAN_LLM_MODEL` | *(empty)* | model id |
-| `TITAN_LLM_API_KEY` | `$OPENAI_API_KEY` | bearer token |
+| `TITAN_LLM_API_KEY` | `$OPENAI_API_KEY` | bearer token (overrides `~/.titan/secrets.json`) |
 | `TITAN_LLM_TIMEOUT` | `600` | per-request seconds |
 | `TITAN_LLM_MAX_TOKENS` | `0` | 0 = endpoint default |
 | `TITAN_MAX_WORKERS` | `2` | parallel intents |
@@ -299,6 +344,7 @@ titan/agents.py        prompts, prompt assembly, tool-calling loop
 titan/engine.py        orchestrator: goals → planner rounds → workers → judgement
 titan/guard.py         deny rules, scope, pacing, audit, failure attribution
 titan/skills.py        SKILL.md index + on-demand load
+titan/gui.py           the console page (one HTML document, no build step)
 titan/server.py        web GUI + JSON API (localhost, token-gated off-localhost)
 titan/cli.py           command line
 skills/                ARTEX skills, verbatim
@@ -311,7 +357,7 @@ tests/test_cli.py      CLI + real HTTP provider + SQLite persistence + console
 ## Tests
 
 ```bash
-make test          # 9 tests, ~7 s, no model, no internet
+make test          # 11 tests, ~10 s, no model, no internet
 ```
 
 or individually:

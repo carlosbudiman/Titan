@@ -5,11 +5,12 @@ file names, so a defender's ARTEX signatures do not match this tool.
 """
 from __future__ import annotations
 
+import json
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
-VERSION = "0.3.0"
+VERSION = "0.4.0"
 TOOL_NAME = "titan"
 
 
@@ -96,3 +97,62 @@ class Settings:
             "console": f"{self.console_bind}:{self.console_port}",
             "state_dir": str(self.home),
         }
+
+
+# --------------------------------------------------------------------- secrets
+# The API key never goes into the database (which gets copied into reports/backups)
+# and is never printed. Precedence: environment, then ~/.titan/secrets.json (0600).
+
+def secrets_path(settings: "Settings") -> Path:
+    return Path(settings.home) / "secrets.json"
+
+
+def load_api_key(settings: "Settings") -> str:
+    if settings.api_key:
+        return settings.api_key
+    p = secrets_path(settings)
+    try:
+        data = json.loads(p.read_text())
+    except (OSError, ValueError):
+        return ""
+    key = data.get("llm_api_key") if isinstance(data, dict) else ""
+    return key if isinstance(key, str) else ""
+
+
+def save_api_key(settings: "Settings", key: str) -> Path:
+    """Write the key to a 0600 file, atomically, without touching the database."""
+    p = secrets_path(settings)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    tmp = p.with_suffix(".tmp")
+    payload = {"llm_api_key": key}
+    fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    try:
+        with os.fdopen(fd, "w") as fh:
+            json.dump(payload, fh)
+            fh.write("\n")
+        os.chmod(tmp, 0o600)
+        os.replace(tmp, p)
+        os.chmod(p, 0o600)
+    finally:
+        if tmp.exists():
+            try:
+                tmp.unlink()
+            except OSError:
+                pass
+    return p
+
+
+def key_source(settings: "Settings") -> str:
+    if settings.api_key:
+        return "env: TITAN_LLM_API_KEY"
+    if secrets_path(settings).exists():
+        return f"file: {secrets_path(settings)} (0600)"
+    return "unset"
+
+
+def mask(secret: str) -> str:
+    if not secret:
+        return "(unset)"
+    if len(secret) <= 8:
+        return "****"
+    return f"{secret[:4]}...{secret[-4:]} (len {len(secret)})"

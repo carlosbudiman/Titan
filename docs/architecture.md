@@ -164,14 +164,46 @@ Post-call, results are attributed `blocked` / `error` / `ok`, which is what make
 
 ## 7. Console
 
-`titan/server.py` serves one HTML document and a JSON API from the same process as
-the engine. The engine is instantiated once; `/api/run` starts `run_task` on a
-daemon thread and refuses a second concurrent run of the same task (409). `/api/stop`
-sets the engine's per-task stop flag, which the round loop and the worker poll
-check, so a stop lands between rounds or inside a running intent.
+`titan/gui.py` is the page; `titan/server.py` serves it and a JSON API from the same
+process as the engine. The engine is instantiated once; `/api/run` starts `run_task`
+on a daemon thread and refuses a second concurrent run of the same task (409).
+`/api/stop` sets the engine's per-task stop flag, which the round loop and the worker
+poll check, so a stop lands between rounds or inside a running intent.
 
-Endpoints: `GET /`, `/api/tasks`, `/api/state?task=N`, `/api/export?task=N`;
-`POST /api/task`, `/api/run`, `/api/stop`, `/api/hint`, `/api/steer`, `/api/kill`.
+Endpoints:
+
+| Method | Path | Purpose |
+|---|---|---|
+| GET | `/` | the console page |
+| GET | `/api/tasks`, `/api/state?task=N` | task list, full task snapshot |
+| GET | `/api/agents?task=N` | live agent rows + token usage + recent steps |
+| GET | `/api/graph?task=N`, `/api/node?id=N` | exploration nodes/edges for the SVG, node detail |
+| GET | `/api/traffic?task=N&q=`, `/api/traffic_one?id=N` | recorded HTTP traffic |
+| GET | `/api/skills`, `/api/skill?name=` | skill index and body |
+| GET | `/api/settings`, `/api/models?url=` | current config (key masked), model list |
+| GET | `/api/export?task=N` | markdown report |
+| POST | `/api/task`, `/api/run`, `/api/stop` | lifecycle |
+| POST | `/api/hint`, `/api/steer`, `/api/kill` | operator intervention |
+| POST | `/api/settings`, `/api/settings/test` | write config, test a completion |
+| POST | `/api/finding`, `/api/scope` | finding triage, add scope |
+
+### Configuration storage
+
+The `settings` table holds non-secret config (endpoint, model, timeout, temperature,
+pacing); the API key lives in `~/.titan/secrets.json`, mode 0600, written via
+`os.open(0o600)` and an atomic rename. `load_api_key` precedence is environment,
+then file. `Engine.reload_llm()` resolves the config on every run and on every
+settings write, so the CLI and the GUI always agree without a restart.
+
+### Live agent telemetry
+
+`agent_state` is a single-row-per-agent table (`key, task_id, role, intent, state,
+tool, note, model, turns, tokens_in, tokens_out, started, updated`). `run_loop` gets
+an optional `step(kind, payload)` observer; the engine maps `llm` / `tool_start` /
+`tool_end` events into `live_update`, which writes through to this table. Because the
+state is in SQLite rather than process memory, `titan serve` shows workers started by
+`titan run` in another process. Rows idle for more than 120 s are displayed as
+`stale` rather than pretending the agent is alive.
 
 Auth: loopback-only by default. If `TITAN_CONSOLE_BIND` is not a loopback address the
 process refuses to start without `TITAN_CONSOLE_TOKEN`, and then requires
