@@ -189,6 +189,7 @@ label.f>span{display:block;color:var(--dim);font-size:var(--fs-12);margin-bottom
 .tabs button{border:0;border-bottom:2px solid transparent;border-radius:0;background:none;
   color:var(--dim);padding:.45rem .7rem;font-size:var(--fs-13)}
 .tabs button.on{color:var(--brand);border-bottom-color:var(--brand);font-weight:600}
+.tabs .tab-active{color:var(--brand);border-bottom-color:var(--brand);font-weight:600}
 .banner{border:1px solid var(--brand);background:var(--sel);border-radius:10px;padding:.6rem .8rem;
   margin-bottom:.9rem}
 .filters{display:flex;gap:.3rem;align-items:center;flex-wrap:wrap;margin-bottom:.8rem}
