@@ -12,6 +12,7 @@ import time
 import uuid
 from pathlib import Path
 
+from .artifacts import Artifacts
 from .agents import (GOALS_PROMPT, PLANNER_PROMPT, TRAFFIC_BLOCK, WORKER_PROMPT,
                      constraints_block, noise_block, parse_json_block, render, run_loop)
 from .guard import Guard, Pacer, Scope
@@ -467,6 +468,7 @@ class Engine:
         workers = max(1, workers or self.settings.max_workers)
         deadline = (time.time() + self.settings.task_deadline_s) if self.settings.task_deadline_s else 0
         self.clear_stop(task_id)
+        self.store.reclaim_running(task_id)   # anything 'running' is from a dead process
         self.apply_runtime_settings()
         self.reload_llm()
         self.emit(f"Titan task #{task_id} [{mode}]: {task['goal']}")
@@ -547,6 +549,7 @@ class Engine:
                 threads.append(t)
             for t in threads:
                 t.join()
+            self.write_artifacts(task_id)
 
             ov = self.store.graph_overview(task_id)
             progress = (ov["facts_total"], ov["findings_total"])
@@ -577,6 +580,8 @@ class Engine:
             if self.store.goal_met(task_id):
                 self.store.set_task_status(task_id, "achieved")
 
+        self.store.reclaim_running(task_id)
+        self.write_artifacts(task_id)
         status = self.store.get_task(task_id)["status"]
         ov = self.store.graph_overview(task_id)
         return {
@@ -589,6 +594,13 @@ class Engine:
             "usage": self.store.usage_totals(task_id),
             "goals": ov["goals"],
         }
+
+    def write_artifacts(self, task_id: int) -> None:
+        """Refresh the on-disk tree; never let a filesystem problem stop a run."""
+        try:
+            Artifacts(self.run_workdir(task_id)).write_all(self.store, task_id)
+        except Exception as e:  # noqa: BLE001
+            self.emit(f"[engine] artifacts not written: {type(e).__name__}: {e}")
 
     # ------------------------------------------------------------------ chat
     def chat(self, task_id: int, message: str) -> str:

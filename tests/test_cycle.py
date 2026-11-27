@@ -270,7 +270,7 @@ class CycleTest(unittest.TestCase):
         # "kind:value" pasted into the wrong field must still parse
         s2 = Scope([{"kind": "domain", "value": "ip:10.20.30.40"}])
         self.assertTrue(s2.allows_host("10.20.30.40"))
-        self.assertNotIn("ip", s2.domains)
+        self.assertNotIn("ip", s2.hosts)          # stored as an address, not a hostname
 
     def test_engagement_workdir_is_used_and_enforced(self):
         eng = self.eng
@@ -413,6 +413,73 @@ class CycleTest(unittest.TestCase):
         eng.store.set_state(nid, "done")
         done = eng.store.recent_done(tid)[0]
         self.assertRegex(done["finished"], r"^\d{2}:\d{2}:\d{2}$")
+
+    def test_scope_allows_resolved_address_and_ports(self):
+        from titan.guard import Scope
+
+        sc = Scope([{"kind": "domain", "value": "pelican.local"},
+                    {"kind": "url", "value": "https://pi.example.com:8443/"}],
+                   resolver=lambda h: [(None, None, None, "", ("192.168.168.98", 0))])
+        self.assertTrue(sc.allows_host("192.168.168.98"))       # resolved from the domain
+        self.assertTrue(sc.allows_host("pelican.local", 8080))
+        self.assertFalse(sc.allows_host("10.1.2.3"))
+        self.assertTrue(sc.allows_host("pi.example.com", 8443))
+        self.assertFalse(sc.allows_host("pi.example.com", 80))
+        ex = Scope([{"kind": "domain", "value": "example.com"},
+                    {"kind": "exclude", "value": "staging.example.com"}])
+        self.assertFalse(ex.allows_host("staging.example.com"))
+        self.assertTrue(ex.allows_host("app.example.com"))
+
+    def test_scope_candidate_is_queued_then_approved(self):
+        from titan.guard import Guard, Scope
+
+        tid = self.eng.new_task("scope flow", scope=[{"kind": "domain", "value": "example.com"}])
+        store, settings = self.eng.store, self.eng.settings
+        g = Guard(store, settings, tid, "w1", Scope(store.scope(tid)))
+        ok, msg = g.check("bash", {"command": "curl http://203.0.113.9/status"})
+        self.assertFalse(ok)
+        self.assertIn("waiting for the operator", msg)
+        cands = store.scope_candidates(tid)
+        self.assertEqual([c["host"] for c in cands], ["203.0.113.9"])
+        self.assertEqual(store.scope_candidates(tid, "pending")[0]["state"], "pending")
+
+        res = store.decide_scope_candidate(cands[0]["id"], True)
+        self.assertEqual(res["state"], "approved")
+        kinds = {(e["kind"], e["value"]) for e in store.scope(tid)}
+        self.assertIn(("ip", "203.0.113.9"), kinds)
+        g2 = Guard(store, settings, tid, "w1", Scope(store.scope(tid)))
+        self.assertTrue(g2.check("bash", {"command": "curl http://203.0.113.9/status"})[0])
+
+    def test_subdomain_of_approved_domain_is_auto_allowed(self):
+        from titan.guard import Guard, Scope
+
+        tid = self.eng.new_task("auto sub", scope=[{"kind": "domain", "value": "example.com"}])
+        store, settings = self.eng.store, self.eng.settings
+        g = Guard(store, settings, tid, "w1", Scope(store.scope(tid)))
+        ok, _ = g.check("bash", {"command": "curl https://api.example.com/health"})
+        self.assertTrue(ok)
+        self.assertFalse(store.scope_candidates(tid))
+
+    def test_artifacts_tree_is_written(self):
+        from titan.artifacts import Artifacts
+
+        tid = self.eng.new_task("artifact flow", scope=[{"kind": "domain", "value": "example.com"}])
+        root = self.eng.run_workdir(tid)
+        self.eng.store.add_fact(tid, "port 8080 open on 127.0.0.1", source="nmap",
+                                confidence="observed")
+        res = Artifacts(root).write_all(self.eng.store, tid)
+        self.assertGreater(res["files"], 2)
+        for rel in ("00-meta.json", "enumeration/hosts.json", "report/report.md"):
+            self.assertTrue((root / rel).is_file(), rel)
+
+    def test_dead_process_intents_are_reclaimed(self):
+        tid = self.eng.new_task("stale runs", scope=[{"kind": "url", "value": self.target.url}])
+        iid = self.eng.store.add_intent(tid, "probe the target", priority=0)
+        self.eng.store.x("UPDATE exploration_nodes SET state='running' WHERE id=?", (iid,))
+        self.eng.store.db.commit()
+        self.assertEqual(self.eng.store.reclaim_running(tid), 1)
+        row = self.eng.store.one("SELECT state FROM exploration_nodes WHERE id=?", (iid,))
+        self.assertEqual(row["state"], "stale")
 
     def test_scope_values_are_normalised(self):
         from titan.store import Store

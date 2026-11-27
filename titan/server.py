@@ -9,12 +9,15 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import threading
+from pathlib import Path
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
 from .config import key_source, load_api_key, mask, save_api_key
+from .guard import Scope
 from .engine import Engine
 from .gui import GUI
 from .llm import LLM, LLMError, list_models
@@ -133,6 +136,9 @@ def serve(settings, task_id: int = 0) -> int:
                     "overview": ov,
                     "enumeration": store.enumeration(tid),
                     "timeline": store.timeline(tid),
+                    "scope": {"entries": store.scope(tid),
+                              "pending": store.scope_candidates(tid, "pending"),
+                              "policy": store.scope_policy(tid)},
                     "coverage": store.coverage_detail(tid),
                     "findings": store.findings(tid),
                     "assets": store.assets(tid, limit=200),
@@ -167,6 +173,61 @@ def serve(settings, task_id: int = 0) -> int:
             if path == "/api/skill":
                 name = (q.get("name") or [""])[0]
                 return self._json({"name": name, "body": skills.read(name)})
+
+            if path == "/api/scope":
+                tid = self._tid(q)
+                if not store.get_task(tid):
+                    return self._json({"error": f"no task {tid}"}, 404)
+                entries = store.scope(tid)
+                sc = Scope(entries)
+                resolved = {}
+                for e in entries:
+                    if e["kind"] in ("domain", "subdomain", "url"):
+                        host = e["value"].split("://")[-1].split("/")[0].split(":")[0]
+                        resolved[e["value"]] = sorted(sc._resolved(host))
+                return self._json({
+                    "entries": entries,
+                    "excludes": [e["value"] for e in entries if e["kind"] == "exclude"],
+                    "resolved": resolved,
+                    "candidates": store.scope_candidates(tid, None)[:50],
+                    "policy": store.scope_policy(tid),
+                    "matches": {h: sc.allows_host(h) for h in
+                                sorted({c["host"] for c in store.scope_candidates(tid, None)})},
+                })
+
+            if path == "/api/artifacts":
+                tid = self._tid(q)
+                task = store.get_task(tid)
+                if not task:
+                    return self._json({"error": f"no task {tid}"}, 404)
+                root = engine.run_workdir(tid)
+                return self._json({"root": str(root), "tree": _tree(root)})
+
+            if path == "/api/artifact":
+                tid = self._tid(q)
+                if not store.get_task(tid):
+                    return self._json({"error": f"no task {tid}"}, 404)
+                rel = (q.get("path") or [""])[0]
+                root = engine.run_workdir(tid).resolve()
+                target = (root / rel).resolve()
+                if not target.is_relative_to(root) or not target.is_file():
+                    return self._json({"error": "outside the engagement folder"}, 400)
+                size = target.stat().st_size
+                if size > 2_000_000:
+                    return self._json({"error": f"file is {size} bytes; open it from disk"}, 400)
+                raw = target.read_bytes()
+                if (q.get("raw") or [""])[0] == "1":
+                    self.send_response(200)
+                    self.send_header("Content-Type", _mime(target))
+                    self.send_header("Content-Length", str(len(raw)))
+                    self.end_headers()
+                    self.wfile.write(raw)
+                    return
+                if re.search(rb"\x00", raw[:4096]):
+                    return self._json({"path": rel, "binary": True, "size": size,
+                                       "mime": "application/octet-stream"})
+                return self._json({"path": rel, "size": size, "text": raw.decode("utf-8", "replace"),
+                                   "mime": _mime(target)})
 
             if path == "/api/traffic":
                 tid = self._tid(q)
@@ -356,6 +417,45 @@ def serve(settings, task_id: int = 0) -> int:
                 store.log(tid, "operator", "approval", decision)
                 return self._json({"approval": decision, "applied": bool(ok)})
 
+            if path == "/api/scope/add":
+                tid = int(body.get("task") or 0)
+                kind = str(body.get("kind") or "").strip()
+                value = str(body.get("value") or "").strip()
+                if not (store.get_task(tid) and kind and value):
+                    return self._json({"error": "task, kind and value required"}, 400)
+                store.add_scope(tid, kind, value, "operator")
+                store.log(tid, "operator", "scope", f"added {kind}={value}")
+                return self._json({"entries": store.scope(tid)})
+
+            if path == "/api/scope/remove":
+                tid = int(body.get("task") or 0)
+                kind = str(body.get("kind") or "").strip()
+                value = str(body.get("value") or "").strip()
+                if not (store.get_task(tid) and kind and value):
+                    return self._json({"error": "task, kind and value required"}, 400)
+                store.remove_scope(tid, kind, value.strip().lower())
+                store.log(tid, "operator", "scope", f"removed {kind}={value}")
+                return self._json({"entries": store.scope(tid)})
+
+            if path == "/api/scope/decide":
+                cid = int(body.get("id") or 0)
+                approve = bool(body.get("approve"))
+                note = str(body.get("note") or "").strip()
+                res = store.decide_scope_candidate(cid, approve, note)
+                if not res:
+                    return self._json({"error": f"no candidate {cid}"}, 404)
+                store.log(res.get("id") or 0, "operator", "scope",
+                          f"{'approved' if approve else 'rejected'} {res['host']}")
+                return self._json(res)
+
+            if path == "/api/scope/policy":
+                tid = int(body.get("task") or 0)
+                if not store.get_task(tid):
+                    return self._json({"error": f"no task {tid}"}, 404)
+                pol = store.set_scope_policy(tid, auto_subdomains=body.get("auto_subdomains"),
+                                             auto_same_ip=body.get("auto_same_ip"))
+                return self._json({"policy": pol})
+
             if path == "/api/hint":
                 tid = int(body.get("task") or 0)
                 text = str(body.get("text") or "").strip()
@@ -417,6 +517,40 @@ def serve(settings, task_id: int = 0) -> int:
         srv.server_close()
     return 0
 
+
+
+def _mime(path) -> str:
+    import mimetypes
+
+    return mimetypes.guess_type(str(path))[0] or "text/plain"
+
+
+def _tree(root, limit: int = 600) -> list[dict]:
+    """Flat, sorted listing of the engagement folder for the artifacts view."""
+    import os
+
+    out: list[dict] = []
+    root = Path(root)
+    if not root.exists():
+        return out
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = sorted(d for d in dirnames if not d.startswith("."))[:40]
+        rel_dir = os.path.relpath(dirpath, root)
+        if rel_dir != ".":
+            out.append({"path": rel_dir.replace(os.sep, "/"), "type": "dir", "size": 0, "mtime": 0})
+        for f in sorted(filenames):
+            if f.startswith("."):
+                continue
+            full = os.path.join(dirpath, f)
+            try:
+                st = os.stat(full)
+            except OSError:
+                continue
+            out.append({"path": os.path.relpath(full, root).replace(os.sep, "/"), "type": "file",
+                        "size": st.st_size, "mtime": int(st.st_mtime)})
+        if len(out) > limit:
+            break
+    return out
 
 
 def _report_html(store: Store, task_id: int) -> str:

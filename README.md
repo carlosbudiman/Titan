@@ -293,11 +293,12 @@ One process, no build step, no JavaScript dependencies, no external assets.
 | View | What it does |
 |---|---|
 | **Overview** | intent timeline (one lane per worker, bar = wall-clock duration, click to open), goals, constraints, queue with steer/stop, operator notes, scope editor, live agents, untested assets |
-| **Findings** | severity and status filters, inline detail with evidence and reproduction, status workflow (open/confirmed/FP/duplicate/ignored), **copy as markdown** per finding or all, **report preview** |
-| **Enumeration** | hosts → services → paths → observations, evidence-tagged, with a collapsible raw-observation list |
-| **Evidence** | every recorded request/response, searchable, with request and response headers side by side |
-| **Activity** | the trace: time, Δ since the previous event, worker, kind, detail; filter by worker or kind |
-| **Graph** | both graphs' exploration side as SVG; nodes by provenance, edge labels, click for the payload |
+| **Scope** | approved targets with what they resolve to, discovered hosts waiting for approval, exclusions, and the auto-approval policy |
+| **Enumeration** | per host: ports and services, web surface, discovered paths with status codes, and observations tagged observed/inferred with the tool and time that produced them |
+| **Findings** | severity and status filters, inline evidence and reproduction, status workflow, copy as markdown, report preview |
+| **Artifacts** | the engagement folder itself — a tree of `enumeration/`, `findings/`, `poc/`, `evidence/`, `report/`, with a viewer for markdown, JSON, text and images, plus the recorded traffic |
+| **Activity** | the trace: time, delta, worker, kind, detail; filter by worker or kind |
+| **Graph** | both graphs as SVG; running intents pulse and their edges animate, so progress is visible while the run is live |
 
 Global views live in the header menu: **Settings** (model, key, pacing, test
 connection) and **Skills** (all 11 with full `SKILL.md`).
@@ -305,6 +306,34 @@ connection) and **Skills** (all 11 with full `SKILL.md`).
 `Report` opens a client-facing page — goals, scope, findings with severity and
 evidence, and what was enumerated, with internal intents, traces and reasoning left
 out. It prints cleanly to PDF from the browser.
+
+### Scope
+
+`domain=example.com` allows the apex, every subdomain and any address those names
+resolve to, so a port scan against the IP is not refused. `subdomain=` is exact,
+`ip`/`cidr` are literal, `url=` carries a port restriction, `exclude=` always wins.
+
+Anything the guard refuses is recorded instead of silently dropped: the host appears
+in **Scope → Discovered** with the tool and command that found it, and one click
+approves it. Approval is picked up by running workers within a couple of seconds —
+no restart. Subdomains of an approved domain can be auto-approved (on by default),
+and every auto-approval is tagged in the audit log.
+
+### Artifacts on disk
+
+Every round rewrites the engagement folder, so the output exists without the console:
+
+```
+<workdir>/
+  00-meta.json                 goal, scope, policy, counts
+  enumeration/hosts.json       index, plus <host>/summary.md, paths.txt, http.txt
+  findings/F-01-<slug>.md      Title/severity/asset/evidence/reproduction
+  findings/index.json
+  poc/F-01-<slug>/             request.http, response.http, poc.sh, README.md
+  evidence/traffic.jsonl       every recorded request/response
+  evidence/observations.jsonl
+  report/report.md
+```
 
 A density toggle (compact / comfortable) is in the header menu and is remembered per
 browser. Keyboard: `g` then `o/f/e/v/a/r` for the tabs, `/` to focus the filter,

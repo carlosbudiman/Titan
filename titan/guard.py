@@ -47,18 +47,37 @@ LOOPBACK = {"127.0.0.1", "::1", "localhost", "0.0.0.0"}
 
 
 class Scope:
-    """Authorized target set for one task."""
+    """Authorized target set for one task.
 
-    def __init__(self, entries: list[dict] | None = None):
-        self.domains: set[str] = set()
-        self.ips: set[ipaddress._BaseNetwork] = set()
+    Matching rules
+    --------------
+    domain=example.com   the apex, every subdomain, and any address those names
+                         resolve to (so a port scan against the IP is in scope)
+    subdomain=a.example.com   that host only, no siblings, no parent
+    ip / cidr            literal addresses and ranges
+    url=...              host plus the port in the URL (no port = any port)
+    keyword=...          literal string match, for bucket and tenant names
+    exclude=...          always wins; host or domain suffix
+
+    An address is also allowed when it resolves from an allowed host, which is what
+    makes "domain=example.com" usable against a scan that only speaks IPs.
+    """
+
+    def __init__(self, entries: list[dict] | None = None, resolver=None, ttl: float = 300.0):
+        self.hosts: dict[str, dict] = {}      # host -> {"ports": set(), "subdomains": bool}
+        self.nets: list[ipaddress._BaseNetwork] = []
         self.keywords: set[str] = set()
+        self.excludes: list[str] = []
         self.allow_local = True
+        self._resolver = resolver or _resolver
+        self._ttl = ttl
+        self._dns: dict[str, tuple[float, set[str]]] = {}
         for e in entries or []:
             self.add(e.get("kind", ""), e.get("value", ""))
 
+    # ------------------------------------------------------------------ build
     def add(self, kind: str, value: str) -> None:
-        """One entry may carry several targets and wildcards ("https://a.com/, *.b.com/*")."""
+        """One entry may carry several targets, wildcards and host:port pairs."""
         raw = (value or "").strip()
         if not raw:
             return
@@ -69,70 +88,161 @@ class Scope:
         v = token.strip().strip("\"'")
         if not v:
             return
+        kind = (kind or "").strip().lower()
+        if kind == "exclude":
+            self._add_exclude(v)
+            return
         if kind in ("ip", "cidr"):
             try:
-                self.ips.add(ipaddress.ip_network(v, strict=False))
+                self.nets.append(ipaddress.ip_network(v, strict=False))
             except ValueError:
-                self.domains.add(v.lower())
+                self._add_host(v, subdomains=False)
             return
-        v = re.sub(r"^(ip|cidr|domain|url|keyword)\s*:\s*", "", v, flags=re.I)
+        v = re.sub(r"^(ip|cidr|domain|subdomain|url|keyword|exclude)\s*:\s*", "", v, flags=re.I)
         if v.startswith("*."):
             v = v[2:]
-        v = re.sub(r"^https?://", "", v, flags=re.I)
+            subdomains = True
+        else:
+            subdomains = kind in ("domain", "")
+        if re.match(r"^[a-z]+://", v, re.I):
+            from urllib.parse import urlparse
+
+            u = urlparse(v)
+            host = (u.hostname or "").strip("[]").lower()
+            if not host:
+                return
+            ports = {u.port} if u.port else set()
+            self.hosts.setdefault(host, {"ports": set(), "subdomains": False})["ports"].update(ports)
+            return
         v = v.split("/")[0].rstrip("*").strip()
         if not v:
             return
+        port = None
         if not re.fullmatch(r"\[[0-9a-f:]+\]", v) and v.count(":") == 1:
-            v = v.split(":")[0]            # host:port -> host (IPv6 stays intact)
-        v = v.lower()
+            host, _, maybe_port = v.partition(":")
+            if maybe_port.isdigit():
+                port, v = int(maybe_port), host
         try:
-            self.ips.add(ipaddress.ip_network(v, strict=False))
+            self.nets.append(ipaddress.ip_network(v, strict=False))
             return
         except ValueError:
             pass
-        if kind in ("domain", "url"):
-            self.domains.add(v)
-        elif kind == "keyword":
-            self.keywords.add(v)
+        if kind == "keyword":
+            self.keywords.add(v.lower())
+            return
+        self._add_host(v.lower(), subdomains=subdomains, port=port)
+
+    def _add_host(self, host: str, subdomains: bool, port: int | None = None) -> None:
+        host = host.strip().strip(".").lower()
+        if not host:
+            return
+        rec = self.hosts.setdefault(host, {"ports": set(), "subdomains": subdomains})
+        rec["subdomains"] = rec["subdomains"] or subdomains
+        if port:
+            rec["ports"].add(port)
+
+    def _add_exclude(self, v: str) -> None:
+        v = re.sub(r"^(exclude|domain|host)\s*:\s*", "", v, flags=re.I)
+        v = re.sub(r"^https?://", "", v, flags=re.I).split("/")[0].split(":")[0]
+        v = v.strip().strip(".").lower()
+        if v:
+            self.excludes.append(v)
 
     def empty(self) -> bool:
-        return not (self.domains or self.ips or self.keywords)
+        return not (self.hosts or self.nets or self.keywords)
 
-    def allows_host(self, host: str) -> bool:
-        h = (host or "").strip().lower().strip("[]")
+    def summary(self) -> list[str]:
+        out = [f"domain={h}" for h, r in self.hosts.items() if r["subdomains"]]
+        out += [f"subdomain={h}" for h, r in self.hosts.items() if not r["subdomains"]]
+        out += [f"net={n}" for n in self.nets]
+        out += [f"keyword={k}" for k in self.keywords]
+        out += [f"exclude={e}" for e in self.excludes]
+        return out
+
+    # ----------------------------------------------------------------- decide
+    @staticmethod
+    def _clean(host: str) -> str:
+        h = (host or "").strip().strip("[]").lower().rstrip(".")
+        if "://" in h:
+            from urllib.parse import urlparse
+
+            h = (urlparse(h).hostname or "").strip("[]").lower()
+        return h
+
+    def _excluded(self, host: str) -> bool:
+        return any(host == e or host.endswith("." + e) for e in self.excludes)
+
+    def _resolved(self, host: str) -> set[str]:
+        hit = self._dns.get(host)
+        if hit and time.time() - hit[0] < self._ttl:
+            return hit[1]
+        try:
+            ips = {str(a[4][0]) for a in self._resolver(host)}
+        except Exception:  # noqa: BLE001 - DNS is best effort
+            ips = set()
+        self._dns[host] = (time.time(), ips)
+        return ips
+
+    def hosts_for(self, host: str) -> bool:
+        """Hostname match without touching DNS."""
+        for key, rec in self.hosts.items():
+            if host == key:
+                return True
+            if rec["subdomains"] and host.endswith("." + key):
+                return True
+        return False
+
+    def is_subdomain(self, host: str) -> bool:
+        h = self._clean(host)
+        return any(rec["subdomains"] and h.endswith("." + key) and h != key
+                   for key, rec in self.hosts.items())
+
+    def allows_host(self, host: str, port: int | None = None) -> bool:
+        h = self._clean(host)
         if not h:
             return True
         if self.allow_local and h in LOOPBACK:
             return True
-        if h in self.domains:          # exact entry, incl. a legacy IP-in-domain row
-            return True
+        if self._excluded(h):
+            return False
+        for key, rec in self.hosts.items():
+            matched = h == key or (rec["subdomains"] and h.endswith("." + key))
+            if matched:
+                if not rec["ports"] or port is None or port in rec["ports"]:
+                    return True
+                continue
         try:
             ip = ipaddress.ip_address(h)
         except ValueError:
-            ip = None
-        if ip is not None:
-            if ip.is_loopback and self.allow_local:
-                return True
-            if any(ip in net for net in self.ips):
-                return True
-            return any(str(ip) == d for d in self.domains)
-        for d in self.domains:
-            if h == d or h.endswith("." + d):
+            return False
+        if ip.is_loopback and self.allow_local:
+            return True
+        if any(ip in net for net in self.nets):
+            return True
+        # an address that resolves from an allowed name is in scope by proxy
+        for key in list(self.hosts)[:24]:
+            if h in self._resolved(key):
                 return True
         return False
 
-    def allows_text(self, text: str) -> tuple[bool, str]:
-        """True when every concrete host in `text` is in scope."""
+    def check_text(self, text: str) -> tuple[bool, str, str]:
+        """(allowed, reason, offending host) for every concrete target in `text`."""
         text = text or ""
         if self.empty():
-            return False, "no scope configured for this task"
+            return False, "no scope configured for this task", ""
         for m in RE_URL.finditer(text):
-            host = m.group(1).split(":")[0].split("/")[0]
-            if not self.allows_host(host):
-                return False, f"host {host} is outside the authorized scope"
+            raw = m.group(1)
+            host = raw.split("/")[0]
+            port = None
+            if host.count(":") == 1:
+                hh, _, pp = host.partition(":")
+                if pp.isdigit():
+                    host, port = hh, int(pp)
+            if not self.allows_host(host, port):
+                return False, f"host {host} is outside the authorized scope", host
         for m in RE_IPV4.finditer(text):
             if not self.allows_host(m.group(0)):
-                return False, f"address {m.group(0)} is outside the authorized scope"
+                return False, f"address {m.group(0)} is outside the authorized scope", m.group(0)
         for m in RE_DOMAIN.finditer(text):
             cand = m.group(0).lower()
             ext = cand.rsplit(".", 1)[-1]
@@ -140,10 +250,20 @@ class Scope:
                 continue
             before = text[max(0, m.start() - 8):m.start()]
             if before.endswith(("/", "@", ".", "-", "_")) or "://" in before:
-                continue  # URL host or path fragment, already handled above
+                continue
             if not self.allows_host(cand):
-                return False, f"host {cand} is outside the authorized scope"
-        return True, ""
+                return False, f"host {cand} is outside the authorized scope", cand
+        return True, "", ""
+
+    def allows_text(self, text: str) -> tuple[bool, str]:
+        ok, why, _ = self.check_text(text)
+        return ok, why
+
+
+def _resolver(host: str):
+    import socket
+
+    return socket.getaddrinfo(host, None)
 
 
 class Pacer:
@@ -186,9 +306,21 @@ class Guard:
                          if l.strip() and not l.strip().startswith("#")]
         self.extra = extra
         self.attrib = {"ok": 0, "blocked": 0, "error": 0}
+        self._built = time.time()
+
+    def refresh(self, max_age: float = 3.0) -> None:
+        """Pick up scope changes and approvals made while this intent is running."""
+        if time.time() - self._built < max_age:
+            return
+        try:
+            self.scope = Scope(self.store.scope(self.task_id))
+            self._built = time.time()
+        except Exception:  # noqa: BLE001 - a stale scope must not kill the run
+            self._built = time.time()
 
     def scope_summary(self) -> str:
-        entries = [f"{s['kind']}={s['value']}" for s in self.store.scope(self.task_id)]
+        entries = [f"{'exclude' if s['kind'] == 'exclude' else s['kind']}={s['value']}"
+                   for s in self.store.scope(self.task_id)]
         return "Authorized scope: " + (", ".join(entries) if entries else "empty")
 
     def _deny_hit(self, text: str) -> str:
@@ -231,12 +363,33 @@ class Guard:
                 return False, (f"{BANNER} This call was intercepted. Reason: operator "
                                f"constraint '{c['text']}'. This operation is forbidden.")
         if tool in ("bash", "webfetch") and self.settings.allow_shell:
-            ok, why = self.scope.allows_text(cmd)
+            self.refresh()
+            ok, why, host = self.scope.check_text(cmd)
             if not ok:
+                policy = self.store.scope_policy(self.task_id)
+                # a subdomain of an approved domain is in scope by many engagement
+                # rules; approve it automatically when the operator allows that
+                if host and policy.get("auto_subdomains") and self.scope.is_subdomain(host):
+                    self.store.add_scope(self.task_id, "domain", host, "auto:subdomain")
+                    self.scope = Scope(self.store.scope(self.task_id))
+                    self._built = time.time()
+                    ok, why, host = self.scope.check_text(cmd)
+                    if ok:
+                        self.store.audit(self.task_id, self.worker, tool, "allow",
+                                         f"auto-approved subdomain {host}", cmd)
+                        return True, ""
                 self.store.audit(self.task_id, self.worker, tool, "block", why, cmd)
+                queued = ""
+                if host:
+                    cid = self.store.add_scope_candidate(
+                        self.task_id, host, source=f"{tool} from {self.worker}",
+                        evidence=cmd[:400], detail=why)
+                    if cid:
+                        queued = (" A scope request for this host is now waiting for the "
+                                  "operator in the Scope tab. Do not retry it this way and do "
+                                  "not look for a workaround; continue with in-scope targets.")
                 return False, (f"{BANNER} This call was intercepted. Reason: {why}. "
-                               f"{self.scope_summary()}. Do not reach it another way: either "
-                               f"stay inside that scope or record a fact that it is unreachable.")
+                               f"{self.scope_summary()}.{queued}")
         self.store.audit(self.task_id, self.worker, tool, "allow", "", cmd)
         return True, ""
 

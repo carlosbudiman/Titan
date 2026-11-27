@@ -18,6 +18,16 @@ import time
 from pathlib import Path
 from typing import Any, Iterable
 
+def _looks_ip(value: str) -> bool:
+    import ipaddress
+
+    try:
+        ipaddress.ip_address(value.strip())
+        return True
+    except ValueError:
+        return False
+
+
 SCHEMA = """
 PRAGMA journal_mode=WAL;
 PRAGMA foreign_keys=ON;
@@ -57,6 +67,26 @@ CREATE TABLE IF NOT EXISTS task_scope (
     reason     TEXT,
     created_at TEXT NOT NULL,
     UNIQUE(task_id, kind, value)
+);
+
+CREATE TABLE IF NOT EXISTS scope_candidates (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    task_id    INTEGER NOT NULL REFERENCES explorations(id) ON DELETE CASCADE,
+    host       TEXT NOT NULL,
+    source     TEXT,
+    evidence   TEXT,
+    detail     TEXT,
+    state      TEXT NOT NULL DEFAULT 'pending',   -- pending | approved | rejected
+    created_at TEXT NOT NULL,
+    decided_at TEXT,
+    UNIQUE(task_id, host)
+);
+
+CREATE TABLE IF NOT EXISTS scope_policy (
+    task_id        INTEGER PRIMARY KEY REFERENCES explorations(id) ON DELETE CASCADE,
+    auto_subdomains INTEGER NOT NULL DEFAULT 1,
+    auto_same_ip    INTEGER NOT NULL DEFAULT 0,
+    updated_at     TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS task_coverage (
@@ -418,7 +448,7 @@ class Store:
         row = self.one("SELECT round_no FROM explorations WHERE id=?", (task_id,))
         return int(row["round_no"]) if row else 0
 
-    SCOPE_KINDS = ("domain", "ip", "cidr", "url", "keyword")
+    SCOPE_KINDS = ("domain", "subdomain", "ip", "cidr", "url", "keyword", "exclude")
 
     @classmethod
     def normalise_scope(cls, kind: str, value: str) -> tuple[str, str]:
@@ -436,6 +466,8 @@ class Store:
             pre = pre.strip().lower()
             if pre in cls.SCOPE_KINDS and rest.strip():
                 kind, value = pre, rest.strip()
+        if kind == "exclude":
+            return kind, value
         if kind not in cls.SCOPE_KINDS or kind == "domain":
             # "domain" is the form default; a bare IP/CIDR/URL is not a domain name.
             low = value.lower()
@@ -453,6 +485,15 @@ class Store:
                     kind = "domain"
         return kind, value
 
+    def reclaim_running(self, task_id: int) -> int:
+        """Intents left 'running' by a dead process become 'stale'."""
+        with self.lock:
+            cur = self.db.execute(
+                "UPDATE exploration_nodes SET state='stale' WHERE exploration_id=? AND"
+                " kind='intent' AND state='running'", (task_id,))
+            self.db.commit()
+            return int(cur.rowcount or 0)
+
     def add_scope(self, task_id: int, kind: str, value: str, reason: str = "") -> None:
         kind, value = self.normalise_scope(kind, value)
         if not (task_id and kind and value):
@@ -464,11 +505,85 @@ class Store:
             self.db.commit()
 
     def scope(self, task_id: int) -> list[dict]:
-        out = []
-        for r in self.q("SELECT kind,value,reason FROM task_scope WHERE task_id=?", (task_id,)):
+        out, seen = [], set()
+        for r in self.q("SELECT kind,value,reason FROM task_scope WHERE task_id=? ORDER BY id", (task_id,)):
             kind, value = self.normalise_scope(r["kind"], r["value"])
+            if (kind, value) in seen:      # legacy rows that predate the unique index
+                continue
+            seen.add((kind, value))
             out.append({"kind": kind, "value": value, "reason": r["reason"]})
         return out
+
+    def remove_scope(self, task_id: int, kind: str, value: str) -> None:
+        with self.lock:
+            self.db.execute("DELETE FROM task_scope WHERE task_id=? AND kind=? AND value=?",
+                            (task_id, kind, value.strip().lower()))
+            self.db.commit()
+
+    # ------------------------------------------------------------ scope discovery
+    def scope_policy(self, task_id: int) -> dict:
+        r = self.one("SELECT * FROM scope_policy WHERE task_id=?", (task_id,))
+        if not r:
+            return {"auto_subdomains": 1, "auto_same_ip": 0}
+        return {"auto_subdomains": int(r["auto_subdomains"]), "auto_same_ip": int(r["auto_same_ip"])}
+
+    def set_scope_policy(self, task_id: int, **kw) -> dict:
+        cur = self.scope_policy(task_id)
+        for k in ("auto_subdomains", "auto_same_ip"):
+            if k in kw and kw[k] is not None:
+                cur[k] = 1 if kw[k] else 0
+        with self.lock:
+            self.db.execute(
+                "INSERT INTO scope_policy(task_id,auto_subdomains,auto_same_ip,updated_at)"
+                " VALUES(?,?,?,?) ON CONFLICT(task_id) DO UPDATE SET"
+                " auto_subdomains=excluded.auto_subdomains, auto_same_ip=excluded.auto_same_ip,"
+                " updated_at=excluded.updated_at",
+                (task_id, cur["auto_subdomains"], cur["auto_same_ip"], now()))
+            self.db.commit()
+        return cur
+
+    def add_scope_candidate(self, task_id: int, host: str, source: str = "",
+                            evidence: str = "", detail: str = "") -> int:
+        """Queue a host the guard refused; returns its id, or 0 when already known."""
+        host = (host or "").strip().lower()
+        if not host:
+            return 0
+        row = self.one("SELECT id,state FROM scope_candidates WHERE task_id=? AND host=?",
+                       (task_id, host))
+        if row:
+            return 0
+        with self.lock:
+            cur = self.db.execute(
+                "INSERT OR IGNORE INTO scope_candidates(task_id,host,source,evidence,detail,state,created_at)"
+                " VALUES(?,?,?,?,?,'pending',?)", (task_id, host, source, evidence, detail, now()))
+            self.db.commit()
+            return int(cur.lastrowid or 0)
+
+    def scope_candidates(self, task_id: int, state: str | None = "pending") -> list[dict]:
+        sql = "SELECT * FROM scope_candidates WHERE task_id=?"
+        args: list[Any] = [task_id]
+        if state:
+            sql += " AND state=?"
+            args.append(state)
+        sql += " ORDER BY id DESC"
+        return [dict(r) for r in self.q(sql, args)]
+
+    def decide_scope_candidate(self, cid: int, approve: bool, note: str = "") -> dict | None:
+        row = self.one("SELECT * FROM scope_candidates WHERE id=?", (cid,))
+        if not row:
+            return None
+        state = "approved" if approve else "rejected"
+        if approve:
+            kind = ("url" if row["host"].startswith(("http://", "https://")) else
+                    "cidr" if "/" in row["host"] else
+                    "ip" if _looks_ip(row["host"]) else "domain")
+            self.add_scope(row["task_id"], kind, row["host"],
+                           f"approved:{row['source'] or 'discovery'}" + (f" {note}" if note else ""))
+        with self.lock:
+            self.db.execute("UPDATE scope_candidates SET state=?, decided_at=? WHERE id=?",
+                            (state, now(), cid))
+            self.db.commit()
+        return {"id": cid, "host": row["host"], "state": state}
 
     def add_constraint(self, task_id: int, kind: str, text: str, origin: str = "planner") -> None:
         self.x("INSERT INTO task_constraints(task_id,kind,text,origin,created_at) VALUES(?,?,?,?,?)",

@@ -212,6 +212,25 @@ label.f>span{display:block;color:var(--dim);font-size:var(--fs-12);margin-bottom
 @keyframes pop{from{opacity:0;transform:scale(.985)}to{opacity:1;transform:none}}
 kbd{font-family:inherit;border:1px solid var(--line);border-bottom-width:2px;border-radius:4px;
   padding:0 .3rem;font-size:var(--fs-11);background:var(--surface-2)}
+/* artifacts tree */
+.tnode{padding:.2rem .35rem;border-radius:5px;font-size:var(--fs-12);cursor:pointer;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;display:flex;gap:.4rem;
+  justify-content:space-between}
+.tnode:hover{background:var(--surface-2)}
+.tnode.on{background:var(--sel);color:var(--brand);font-weight:600}
+.tnode.dir{color:var(--dim);cursor:default;font-weight:600;margin-top:.35rem}
+.tnode.dir:hover{background:none}
+.tnode .sz{color:var(--dim);font-size:var(--fs-11)}
+pre.code{max-height:32rem}
+.md{line-height:1.6}
+.md code{background:var(--surface-2);border:1px solid var(--line);border-radius:4px;padding:0 .2rem}
+
+/* live graph */
+@keyframes nodepulse{0%,100%{opacity:.35}50%{opacity:1}}
+@keyframes dashmove{to{stroke-dashoffset:-10}}
+.live-node{animation:nodepulse 1.7s ease-in-out infinite}
+.live-edge{stroke-dasharray:5 5;animation:dashmove .9s linear infinite}
+
 @media(max-width:960px){main{grid-template-columns:1fr}aside{border-right:0;
   border-bottom:1px solid var(--line)}section{padding:.9rem}.grid2,.grid3{grid-template-columns:1fr}}
 </style></head>
@@ -245,10 +264,12 @@ let S = {tasks: [], task: 0, data: null, tab: 'overview', view: 'task',
          settings: null, skills: null, traffic: null, trafficId: 0, trafficQ: '',
          graph: null, nodeSel: 0, models: [], lastSig: '', findSev: '', findStatus: '',
          findQ: '', actWorker: '', actKind: '', graphKind: '', expanded: {},
-         lastResult: {}};
+         lastResult: {}, scopeInfo: null, artifacts: null, artPath: '', artText: '',
+         artMode: 'files'};
 let SEEN = null;
-const TABS = [['overview','Overview'],['findings','Findings'],['enumeration','Enumeration'],
-              ['evidence','Evidence'],['activity','Activity'],['graph','Graph']];
+const TABS = [['overview','Overview'],['scope','Scope'],['enumeration','Enumeration'],
+              ['findings','Findings'],['artifacts','Artifacts'],['activity','Activity'],
+              ['graph','Graph']];
 
 function notify(title, body, kind, onClick) {
   const box = $('#toasts');
@@ -364,7 +385,8 @@ function shortcuts() {
       <tr><td><kbd>g</kbd> then <kbd>o</kbd></td><td>Overview</td></tr>
       <tr><td><kbd>g</kbd> then <kbd>f</kbd></td><td>Findings</td></tr>
       <tr><td><kbd>g</kbd> then <kbd>e</kbd></td><td>Enumeration</td></tr>
-      <tr><td><kbd>g</kbd> then <kbd>v</kbd></td><td>Evidence</td></tr>
+      <tr><td><kbd>g</kbd> then <kbd>s</kbd></td><td>Scope</td></tr>
+      <tr><td><kbd>g</kbd> then <kbd>v</kbd></td><td>Artifacts</td></tr>
       <tr><td><kbd>g</kbd> then <kbd>a</kbd></td><td>Activity</td></tr>
       <tr><td><kbd>g</kbd> then <kbd>r</kbd></td><td>Graph</td></tr>
       <tr><td><kbd>/</kbd></td><td>Focus the filter box</td></tr>
@@ -380,8 +402,8 @@ document.addEventListener('keydown', e => {
   }
   if (e.key === 'g') { S.pendingG = Date.now(); return; }
   if (S.pendingG && Date.now() - S.pendingG < 900) {
-    const map = {o: 'overview', f: 'findings', e: 'enumeration', v: 'evidence',
-                 a: 'activity', r: 'graph'};
+    const map = {o: 'overview', s: 'scope', e: 'enumeration', f: 'findings',
+                 v: 'artifacts', a: 'activity', r: 'graph'};
     if (map[e.key]) { S.pendingG = 0; if (S.view !== 'task') goGlobal('task'); else setTab(map[e.key]); return; }
   }
   if (e.key === '/') {
@@ -489,13 +511,21 @@ async function refresh(force) {
       notify(no === 1 ? 'New observation' : no + ' new observations',
              f ? f.summary : '', 'fact', () => { setTab('enumeration'); });
     }
+    const pend = ((j.scope || {}).pending || []).length;
+    const prevPend = ((prev.scope || {}).pending || []).length;
+    if (pend > prevPend) {
+      const c = ((j.scope || {}).pending || [])[0];
+      notify('Outside scope — approval needed', c ? c.host + ' was found by the run' : '',
+             'finding', () => { setTab('scope'); });
+    }
   }
   const sig = [j.task.status, j.overview.round, j.overview.facts_total, j.overview.findings_total,
                j.overview.open_intents.length, j.overview.running_intents.length,
                j.running ? 1 : 0, j.approval ? 1 : 0, S.tab,
                j.enumeration && j.enumeration.counts ? j.enumeration.counts.services : 0,
                (j.findings || []).map(f => f.id + f.status).join(','),
-               (j.timeline || []).length].join('|');
+               (j.timeline || []).length,
+               ((j.scope || {}).pending || []).length].join('|');
   renderCrumbs();
   if (!force && sig === S.lastSig && prev) { renderLiveFromData(); return; }
   S.lastSig = sig;
@@ -545,6 +575,8 @@ function render() {
       <span class="chip">${ov.findings_total} finding${ov.findings_total === 1 ? '' : 's'}</span>
       <span class="chip">${ov.facts_total} observation${ov.facts_total === 1 ? '' : 's'}</span>
       <span class="chip">round ${ov.round}</span>
+      ${(d.scope && (d.scope.pending || []).length) ? `<span class="chip s-running"
+        style="cursor:pointer" onclick="setTab('scope')">${d.scope.pending.length} host(s) need scope</span>` : ''}
       <span style="flex:1"></span>
       <span class="mono muted" style="font-size:var(--fs-11)" title="artifacts: ${esc(d.workdir || '')}">${esc(d.workdir || '~/.titan/runs/tasks/' + d.task.id)}</span>
       ${d.running ? '<span class="chip s-running">● running</span>' : ''}
@@ -564,9 +596,10 @@ function render() {
     <div id="pane"></div>`;
   const pane = $('#pane');
   if (S.tab === 'overview') pane.innerHTML = tabOverview(d);
+  if (S.tab === 'scope') pane.innerHTML = tabScope(d, S.scopeInfo);
   if (S.tab === 'findings') pane.innerHTML = tabFindings(d);
   if (S.tab === 'enumeration') pane.innerHTML = tabEnumeration(d);
-  if (S.tab === 'evidence') { pane.innerHTML = tabEvidence(d); loadTraffic(); }
+  if (S.tab === 'artifacts') { pane.innerHTML = tabArtifacts(d); loadArtifacts(); }
   if (S.tab === 'activity') pane.innerHTML = tabActivity(d);
   if (S.tab === 'graph') { pane.innerHTML = '<div class="skel" style="height:8rem"></div>'; loadGraph(); }
   if (typingGuard()) { /* keep focus */ }
@@ -575,7 +608,14 @@ function render() {
 
 function typingGuard() { return false; }
 
-function setTab(t) { S.tab = t; const sc = $('#main'); const st = sc ? sc.scrollTop : 0; render(); if (sc) sc.scrollTop = st; }
+function setTab(t) {
+  S.tab = t;
+  const sc = $('#main'); const st = sc ? sc.scrollTop : 0;
+  render();
+  if (sc) sc.scrollTop = st;
+  if (t === 'scope' && S.task) loadScope();
+  if (t === 'artifacts' && S.task) loadArtifacts();
+}
 
 /* ---------- overview ---------- */
 function tabOverview(d) {
@@ -734,6 +774,151 @@ function renderLive(a) {
   }).join('') : '<div class="muted">No agent running.</div>';
 }
 
+/* ---------- scope ---------- */
+async function loadScope() {
+  if (!S.task) return;
+  S.scopeInfo = await api('/api/scope?task=' + S.task);
+  if (S.tab !== 'scope') return;
+  const pane = $('#pane'); if (!pane) return;
+  pane.innerHTML = tabScope(S.data, S.scopeInfo);
+}
+
+function scopeCovers(entries, host) {
+  if (!host) return true;
+  const h = host.toLowerCase();
+  return (entries || []).some(e => {
+    if (e.kind === 'exclude') return false;
+    const v = (e.value || '').toLowerCase().split('://').pop().split('/')[0].split(':')[0];
+    if (e.kind === 'ip' || e.kind === 'cidr') return h === v;
+    if (e.kind === 'subdomain') return h === v;
+    return h === v || h.endsWith('.' + v);
+  });
+}
+
+function tabScope(d, info) {
+  info = info || S.scopeInfo || {entries: (d.scope || {}).entries || [],
+    candidates: (d.scope || {}).pending || [], policy: (d.scope || {}).policy || {},
+    resolved: {}, matches: {}};
+  const entries = info.entries || [];
+  const pending = (info.candidates || []).filter(c => c.state === 'pending');
+  const decided = (info.candidates || []).filter(c => c.state !== 'pending').slice(0, 8);
+  const policy = info.policy || {};
+  const kindLabel = {domain: 'domain + subdomains', subdomain: 'exact host', ip: 'address',
+    cidr: 'range', url: 'url', keyword: 'keyword', exclude: 'exclude'};
+  const row = e => {
+    const res = (info.resolved || {})[e.value];
+    return `<tr>
+      <td><span class="chip">${esc(kindLabel[e.kind] || e.kind)}</span></td>
+      <td class="mono">${esc(e.value)}</td>
+      <td class="hint">${res && res.length ? esc(res.join(', ')) : '—'}</td>
+      <td class="muted">${esc(e.reason || '')}</td>
+      <td class="num"><button class="sm ghost" title="Remove"
+        onclick="removeScope('${esc(e.kind)}','${esc(e.value).replace(/'/g, '&#39;')}')">×</button></td></tr>`;
+  };
+  const approved = entries.filter(e => e.kind !== 'exclude');
+  const excludes = entries.filter(e => e.kind === 'exclude');
+  return `
+  <div class="grid2">
+    <div class="card">
+      <div class="row" style="justify-content:space-between;margin-bottom:.4rem">
+        <h3 style="margin:0;font-size:var(--fs-15)">Approved targets</h3>
+        <span class="chip">${approved.length}</span></div>
+      <table><tr><th>Matches</th><th>Value</th><th>Resolves to</th><th>Source</th><th></th></tr>
+        ${approved.map(row).join('') || '<tr><td colspan="5" class="muted">No scope — every target is refused.</td></tr>'}
+      </table>
+      <div class="row" style="margin-top:.6rem">
+        <select id="scopeKind" style="width:11rem">
+          <option value="domain">domain + subdomains</option>
+          <option value="subdomain">exact host</option>
+          <option value="ip">address</option>
+          <option value="cidr">range (cidr)</option>
+          <option value="url">url (host:port)</option>
+          <option value="keyword">keyword</option>
+        </select>
+        <input id="scopeValue" placeholder="example.com, 10.0.0.0/24, https://app:8443" style="flex:1">
+        <button class="pri" onclick="addScopeEntry()">Add</button>
+      </div>
+      <div class="hint" style="margin-top:.3rem">A domain entry allows its subdomains and any
+        address those names resolve to, so scans against the IP are not refused.</div>
+    </div>
+
+    <div class="card">
+      <div class="row" style="justify-content:space-between;margin-bottom:.4rem">
+        <h3 style="margin:0;font-size:var(--fs-15)">Discovered — pending approval</h3>
+        <span class="chip ${pending.length ? 's-running' : ''}">${pending.length}</span></div>
+      ${pending.length ? pending.map(c => `
+        <div style="border-top:1px solid var(--line);padding:.45rem 0">
+          <div class="row" style="align-items:flex-start">
+            <code style="flex:1">${esc(c.host)}</code>
+            <button class="pri sm" onclick="decideScope(${c.id}, true)">Approve</button>
+            <button class="sm" onclick="decideScope(${c.id}, false)">Reject</button>
+          </div>
+          <div class="hint">${esc(c.source || '')} · ${esc(timeAgo(c.created_at))}
+            ${c.evidence ? ' · ' + esc((c.evidence || '').slice(0, 140)) : ''}</div>
+        </div>`).join('') : '<div class="muted">Nothing waiting. Hosts the guard refuses appear here.</div>'}
+      ${decided.length ? `<div class="hint" style="margin-top:.5rem">recently decided:
+        ${decided.map(c => `<span class="chip">${esc(c.host)} ${esc(c.state)}</span>`).join(' ')}</div>` : ''}
+
+      <hr>
+      <h3 style="margin:0 0 .4rem;font-size:var(--fs-15)">Automatic approval</h3>
+      <label class="row" style="gap:.4rem;margin-bottom:.3rem">
+        <input type="checkbox" style="width:auto" ${policy.auto_subdomains ? 'checked' : ''}
+          onchange="setScopePolicy({auto_subdomains: this.checked})">
+        <span>Subdomains of an approved domain <span class="hint">(recommended)</span></span></label>
+      <label class="row" style="gap:.4rem">
+        <input type="checkbox" style="width:auto" ${policy.auto_same_ip ? 'checked' : ''}
+          onchange="setScopePolicy({auto_same_ip: this.checked})">
+        <span>Hosts sharing an address with an approved target</span></label>
+      <div class="hint" style="margin-top:.3rem">Everything else waits for you. Auto-approvals are
+        tagged in the audit log.</div>
+
+      <hr>
+      <h3 style="margin:0 0 .4rem;font-size:var(--fs-15)">Excluded</h3>
+      ${excludes.map(row).join('') || '<div class="muted">No exclusions.</div>'}
+      <div class="row" style="margin-top:.4rem">
+        <input id="excludeValue" placeholder="staging.example.com" style="flex:1">
+        <button onclick="addExclude()">Exclude</button></div>
+    </div>
+  </div>`;
+}
+
+async function addScopeEntry() {
+  const kind = $('#scopeKind').value, value = ($('#scopeValue').value || '').trim();
+  if (!value) return;
+  const j = await api('/api/scope/add', {task: S.task, kind: kind, value: value});
+  if (j.error) { toast(j.error, 'err'); return; }
+  $('#scopeValue').value = '';
+  toast('Scope updated'); await refresh(true); await loadScope();
+}
+
+async function addExclude() {
+  const value = ($('#excludeValue').value || '').trim();
+  if (!value) return;
+  const j = await api('/api/scope/add', {task: S.task, kind: 'exclude', value: value});
+  if (j.error) { toast(j.error, 'err'); return; }
+  $('#excludeValue').value = '';
+  toast('Excluded ' + value); await refresh(true); await loadScope();
+}
+
+async function removeScope(kind, value) {
+  const j = await api('/api/scope/remove', {task: S.task, kind: kind, value: value});
+  if (j.error) { toast(j.error, 'err'); return; }
+  toast('Removed ' + value); await refresh(true); await loadScope();
+}
+
+async function decideScope(id, approve) {
+  const j = await api('/api/scope/decide', {id: id, approve: approve});
+  if (j.error) { toast(j.error, 'err'); return; }
+  toast((approve ? 'Approved ' : 'Rejected ') + j.host + (approve ? ' — the run can use it now' : ''));
+  await refresh(true); await loadScope();
+}
+
+async function setScopePolicy(patch) {
+  const j = await api('/api/scope/policy', {task: S.task, ...patch});
+  if (j.error) { toast(j.error, 'err'); return; }
+  toast('Scope policy updated'); await refresh(true); await loadScope();
+}
+
 /* ---------- findings ---------- */
 function sevRank(s) { return ({critical: 0, high: 1, medium: 2, low: 3, info: 4})[s] ?? 9; }
 
@@ -794,9 +979,9 @@ function shortStatus(s) {
 function findingDetail(f) {
   return `<div class="grid2" style="margin-top:.5rem">
       <div><h3 style="margin:0 0 .3rem;font-size:var(--fs-12);color:var(--dim)">Evidence</h3>
-        <pre>${esc(f.evidence || '')}</pre></div>
+        <pre>${esc(deesc(f.evidence))}</pre></div>
       <div><h3 style="margin:0 0 .3rem;font-size:var(--fs-12);color:var(--dim)">Reproduction</h3>
-        <pre>${esc(f.poc || '—')}</pre>
+        <pre>${esc(deesc(f.poc || '—'))}</pre>
         ${f.counterevidence ? `<h3 style="margin:.4rem 0 .3rem;font-size:var(--fs-12);color:var(--dim)">Considered and excluded</h3>
           <div class="hint">${esc(f.counterevidence)}</div>` : ''}
         <div class="row" style="margin-top:.4rem">
@@ -839,15 +1024,17 @@ function reportPreview() { window.open('/api/report?task=' + S.task, '_blank'); 
 function tabEnumeration(d) {
   const e = d.enumeration || {hosts: [], counts: {}};
   const c = e.counts || {};
+  const scopeEntries = ((d.scope || {}).entries) || [];
   const head = `<div class="filters">
       <span class="chip">${c.hosts || 0} hosts</span><span class="chip">${c.services || 0} services</span>
       <span class="chip">${c.endpoints || 0} paths</span><span class="chip">${c.observations || 0} observations</span>
       <span style="flex:1"></span>
       <button class="sm ghost" onclick="refresh(true)">Refresh</button></div>`;
   const body = (e.hosts && e.hosts.length)
-    ? e.hosts.map(hostBlock).join('')
+    ? e.hosts.map(h => hostBlock(h, scopeEntries)).join('')
     : `<div class="empty"><b>Nothing enumerated yet</b>Hosts, services, paths and observations
-        appear here as the workers write them back.</div>`;
+        appear here as the workers write them back, and are mirrored under
+        <code>enumeration/</code> in the engagement folder.</div>`;
   const raw = (d.overview.recent_facts || []).length ? `
     <details style="margin-top:.8rem"><summary class="hint" style="cursor:pointer">
       Raw observations (${d.overview.recent_facts.length})</summary>
@@ -858,60 +1045,210 @@ function tabEnumeration(d) {
   return head + body + raw;
 }
 
-function obsBlock(o) {
+function confidenceChip(o) {
   const live = o.confidence === 'observed';
-  return `<div style="margin-bottom:.5rem">
-      <div style="display:flex;gap:.5rem;align-items:flex-start">
-        <span class="dot ${live ? 'live' : 'idle'}" style="margin-top:.45rem"></span>
-        <div><div>${esc(o.summary)}</div>
-          ${o.detail ? `<div class="muted" style="font-size:var(--fs-12)">${esc(o.detail)}</div>` : ''}
-          <div class="hint">${esc(o.source || '')}${o.confidence ? ' · ' + esc(o.confidence) : ''}` +
-        `${o.intent ? ' · intent ' + esc(o.intent) : ''} · ${esc(timeAgo(o.at))}</div>
-        </div></div></div>`;
+  return `<span class="chip" style="border-color:${live ? 'var(--ok)' : 'var(--line)'};
+    color:${live ? 'var(--ok)' : 'var(--dim)'}">${esc(o.confidence || 'inferred')}</span>`;
 }
 
-function hostBlock(h) {
-  const title = h.key === '(unattached)' ? 'General observations' : h.key;
-  const svc = (h.services || []).map(s => `<div style="margin-top:.55rem">
-      <div class="row" style="gap:.4rem"><code>${esc(s.url)}</code>
-        ${s.status ? `<span class="chip">${s.status}</span>` : ''}
-        ${s.title ? `<span class="muted">${esc(s.title)}</span>` : ''}</div>
-      ${(s.tech || []).length ? `<div class="hint">technologies: ${esc(s.tech.join(', '))}</div>` : ''}
-      ${(s.endpoints || []).length ? `<div class="hint">paths: ${s.endpoints.slice(0, 60)
-        .map(e => `<code>${esc(pathOf(e.url))}</code>`).join(' ')}${s.endpoints.length > 60 ? ' …' : ''}</div>` : ''}
+function hostBlock(h, scopeEntries) {
+  const key = h.key || '';
+  const title = key === '(unattached)' ? 'General observations' : key;
+  const inScope = scopeCovers(scopeEntries, h.ip || key);
+  const svc = (h.services || []);
+  const ports = svc.map(s => s.port).filter(Boolean);
+  const tech = [...new Set(svc.flatMap(s => s.tech || []))];
+
+  const svcRows = svc.map(s => `<tr>
+      <td class="mono">${esc(s.port || '')}</td>
+      <td class="mono">${s.url ? `<a href="${esc(s.url)}" target="_blank" rel="noreferrer">${esc(s.url)}</a>` : '—'}</td>
+      <td>${s.status ? `<span class="chip">${esc(String(s.status))}</span>` : ''}
+          ${esc(s.title || '')}</td>
+      <td class="hint">${esc((s.tech || []).join(', '))}</td>
+      <td class="num hint">${(s.endpoints || []).length || ''}</td></tr>`).join('');
+
+  const paths = svc.flatMap(s => (s.endpoints || []).map(e => ({...e, base: s.url})));
+  const pathRows = paths.slice(0, 80).map(e => `<tr>
+      <td class="mono">${esc(e.url)}</td>
+      <td class="num">${e.status_code ? `<span class="chip">${esc(String(e.status_code))}</span>` : ''}</td>
+      <td class="hint">${esc(e.label || '')}</td></tr>`).join('');
+
+  const loose = (h.loose_endpoints || []).slice(0, 40);
+  const obs = (h.observations || []).map(o => `<div style="border-top:1px solid var(--line);padding:.45rem 0">
+      <div class="row" style="gap:.4rem;align-items:baseline">
+        ${confidenceChip(o)}
+        <span style="flex:1">${esc(o.summary)}</span>
+        <span class="hint mono">${esc(o.source || '')}${o.at_local ? ' · ' + esc(o.at_local) : ''}</span>
+      </div>
+      ${o.detail ? `<div class="muted" style="font-size:var(--fs-12);margin-top:.15rem">${esc(o.detail)}</div>` : ''}
     </div>`).join('');
-  const loose = (h.loose_endpoints || []).length
-    ? `<div class="hint" style="margin-top:.5rem">other paths: ${h.loose_endpoints.slice(0, 40)
-        .map(e => `<code>${esc(e.url)}</code>`).join(' ')}</div>` : '';
-  const obs = (h.observations || []).length
-    ? `<div style="margin-top:.7rem;font-size:var(--fs-12);color:var(--dim);text-transform:uppercase;
-         letter-spacing:.05em">Observations</div>` + h.observations.map(obsBlock).join('') : '';
-  return `<div class="card" style="margin-bottom:.8rem">
-      <div class="row" style="justify-content:space-between;align-items:baseline">
+
+  return `<div class="card" style="margin-bottom:.9rem">
+    <div class="row" style="justify-content:space-between;align-items:baseline;flex-wrap:wrap">
+      <div>
         <div style="font-weight:600;font-size:var(--fs-15)">${esc(title)}</div>
-        <span class="hint">${(h.services || []).length} service(s) · ${(h.observations || []).length} observation(s)</span>
-      </div>${svc}${loose}${obs}</div>`;
+        <div class="hint">${h.ip && h.ip !== key ? 'address ' + esc(h.ip) + ' · ' : ''}
+          ${ports.length ? 'ports ' + esc([...new Set(ports)].join(', ')) + ' · ' : ''}
+          ${tech.length ? esc(tech.slice(0, 4).join(', ')) + ' · ' : ''}
+          ${(h.observations || []).length} observation(s)</div>
+      </div>
+      <div class="row">
+        ${inScope
+          ? '<span class="chip" style="color:var(--ok);border-color:var(--ok)">in scope</span>'
+          : `<span class="chip" style="color:var(--warn);border-color:var(--warn)">not in scope</span>
+             <button class="sm pri" onclick="approveHost('${esc(h.ip || key).replace(/'/g, "&#39;")}')">Add to scope</button>`}
+        <button class="sm ghost" onclick="S.artPath='enumeration/${esc(key)}/summary.md'; setTab('artifacts')">Files</button>
+      </div>
+    </div>
+
+    ${svc.length ? `<div style="margin-top:.6rem">
+      <div class="hint" style="text-transform:uppercase;letter-spacing:.05em;margin-bottom:.25rem">Services</div>
+      <table><tr><th class="num">Port</th><th>URL</th><th>Status / title</th><th>Technologies</th><th class="num">Paths</th></tr>
+        ${svcRows}</table></div>` : ''}
+
+    ${pathRows ? `<div style="margin-top:.6rem">
+      <div class="hint" style="text-transform:uppercase;letter-spacing:.05em;margin-bottom:.25rem">Paths</div>
+      <table><tr><th>Path</th><th class="num">Status</th><th>Note</th></tr>${pathRows}</table></div>` : ''}
+
+    ${loose.length ? `<div style="margin-top:.5rem"><div class="hint">other paths:
+      ${loose.map(e => `<code>${esc(e.url)}</code>`).join(' ')}</div></div>` : ''}
+
+    ${obs ? `<div style="margin-top:.6rem">
+      <div class="hint" style="text-transform:uppercase;letter-spacing:.05em;margin-bottom:.25rem">Observations</div>
+      ${obs}</div>` : ''}
+  </div>`;
+}
+
+async function approveHost(host) {
+  const j = await api('/api/scope/add', {task: S.task, kind: 'domain', value: host});
+  if (j.error) { toast(j.error, 'err'); return; }
+  toast('Added ' + host + ' to scope'); await refresh(true);
 }
 
 /* ---------- evidence ---------- */
-function tabEvidence(d) {
+function tabArtifacts(d) {
+  const mode = S.artMode || 'files';
+  const toolbar = `<div class="filters">
+      <span class="chip ${mode === 'files' ? 'on' : ''}" style="cursor:pointer"
+        onclick="S.artMode='files'; setTab('artifacts')">Files</span>
+      <span class="chip ${mode === 'traffic' ? 'on' : ''}" style="cursor:pointer"
+        onclick="S.artMode='traffic'; setTab('artifacts')">Traffic</span>
+      <span style="flex:1"></span>
+      <span class="hint mono" id="artRoot">${esc((S.artifacts || {}).root || (d.workdir || ''))}</span>
+      <button class="sm ghost" onclick="loadArtifacts()">Refresh</button></div>`;
+  if (mode === 'traffic') {
+    return toolbar + `<div class="grid2">
+      <div><h3 style="margin:0 0 .4rem;font-size:var(--fs-15)">Assets</h3>
+        ${assetTable(d)}</div>
+      <div><h3 style="margin:0 0 .4rem;font-size:var(--fs-15)">Recorded traffic</h3>
+        <div class="row" style="margin-bottom:.4rem">
+          <input id="trafficQ" placeholder="Search URL or body" value="${esc(S.trafficQ)}" style="flex:1"
+            onkeydown="if(event.key==='Enter'){S.trafficQ=this.value;loadTraffic()}">
+          <button class="sm" onclick="S.trafficQ=$('#trafficQ').value; loadTraffic()">Search</button>
+        </div>
+        <div id="trafficList"><div class="skel"></div></div>
+        <div id="trafficDetail"></div></div></div>`;
+  }
+  const files = (S.artifacts || {}).tree || [];
+  const tree = files.length ? files.map(f => {
+    const depth = (f.path.split('/').length - 1);
+    const name = f.path.split('/').pop();
+    const sel = f.path === S.artPath;
+    if (f.type === 'dir') {
+      return `<div class="tnode dir" style="padding-left:${depth * 12}px">${esc(name)}/</div>`;
+    }
+    return `<div class="tnode ${sel ? 'on' : ''}" style="padding-left:${depth * 12}px"
+      onclick="openArtifact('${esc(f.path).replace(/'/g, "&#39;")}')" title="${esc(f.path)}">
+      ${esc(name)}<span class="sz">${fmtSize(f.size)}</span></div>`;
+  }).join('') : `<div class="empty" style="margin:.5rem"><b>No files yet</b>
+      They are written at the end of each round — start the engagement, or press Refresh.</div>`;
+  return toolbar + `<div style="display:grid;grid-template-columns:330px 1fr;gap:.8rem;align-items:start">
+    <div class="card" style="padding:.4rem;max-height:34rem;overflow:auto" id="artTree">${tree}</div>
+    <div class="card" id="artView">${artifactViewer()}</div></div>`;
+}
+
+function assetTable(d) {
   const assets = (d.assets || []).filter(a => a.type === 'service' || a.type === 'endpoint');
-  const left = assets.length ? `<table><tr><th>Type</th><th>Target</th><th class="num">Status</th></tr>
-      ${assets.slice(0, 200).map(a => `<tr><td class="muted">${esc(a.type)}</td>
-        <td class="mono">${esc(a.url || a.domain || a.ip || '')}</td>
-        <td class="num">${a.status_code || ''}</td></tr>`).join('')}</table>`
-    : '<div class="empty">No services or endpoints recorded.</div>';
-  return `<div class="grid2">
-    <div><h3 style="margin:0 0 .4rem;font-size:var(--fs-15)">Assets</h3>${left}</div>
-    <div><h3 style="margin:0 0 .4rem;font-size:var(--fs-15)">Recorded traffic</h3>
-      <div class="row" style="margin-bottom:.4rem">
-        <input id="trafficQ" placeholder="Search URL or body" value="${esc(S.trafficQ)}" style="flex:1"
-          onkeydown="if(event.key==='Enter'){S.trafficQ=this.value;loadTraffic()}">
-        <button class="sm" onclick="S.trafficQ=$('#trafficQ').value; loadTraffic()">Search</button>
-      </div>
-      <div id="trafficList"><div class="skel"></div></div>
-      <div id="trafficDetail"></div></div>
-  </div>`;
+  if (!assets.length) return '<div class="empty">No services or endpoints recorded.</div>';
+  return `<table><tr><th>Type</th><th>Target</th><th class="num">Status</th></tr>
+    ${assets.slice(0, 200).map(a => `<tr><td class="muted">${esc(a.type)}</td>
+      <td class="mono">${esc(a.url || a.domain || a.ip || '')}</td>
+      <td class="num">${a.status_code || ''}</td></tr>`).join('')}</table>`;
+}
+
+function artifactViewer() {
+  if (!S.artPath) {
+    return `<div class="empty"><b>Pick a file</b>The engagement folder is the source of truth:
+      <code>enumeration/</code>, <code>findings/</code>, <code>poc/</code>, <code>evidence/</code>,
+      <code>report/report.md</code>.</div>`;
+  }
+  const name = S.artPath.split('/').pop();
+  const isMd = /\.md$/i.test(name);
+  const isImg = /\.(png|jpe?g|gif|webp|svg)$/i.test(name);
+  const body = isImg
+    ? `<img src="/api/artifact?task=${S.task}&raw=1&path=${encodeURIComponent(S.artPath)}"
+        style="max-width:100%;border-radius:8px" alt="${esc(name)}">`
+    : isMd ? mdToHtml(S.artText || '') : `<pre class="code">${esc(S.artText || '')}</pre>`;
+  return `<div class="row" style="justify-content:space-between;margin-bottom:.4rem">
+      <div><b>${esc(name)}</b> <span class="hint mono">${esc(S.artPath)}</span></div>
+      <div class="row"><span class="hint">${fmtSize((S.artText || '').length)}</span>
+      <button class="sm ghost" onclick="copyArtifact()">Copy</button></div></div>
+    ${body}`;
+}
+
+async function loadArtifacts() {
+  if (!S.task) return;
+  S.artifacts = await api('/api/artifacts?task=' + S.task);
+  if (S.artMode && S.artMode !== 'files') { if (S.tab === 'artifacts') loadTraffic(); return; }
+  if (S.tab !== 'artifacts') return;
+  const pane = $('#pane'); if (!pane) return;
+  pane.innerHTML = tabArtifacts(S.data);
+  if (S.artPath) openArtifact(S.artPath, true);
+}
+
+async function openArtifact(path, quiet) {
+  S.artPath = path;
+  if (!quiet) { const pane = $('#pane'); if (pane) pane.innerHTML = tabArtifacts(S.data); }
+  const j = await api('/api/artifact?task=' + S.task + '&path=' + encodeURIComponent(path));
+  if (j.error) { toast(j.error, 'err'); return; }
+  S.artText = j.binary ? '(binary file — open it from disk)' : (j.text || '');
+  const view = $('#artView'); if (view) view.innerHTML = artifactViewer();
+  document.querySelectorAll('#artTree .tnode').forEach(n => n.classList.remove('on'));
+  const sel = [...document.querySelectorAll('#artTree .tnode')]
+    .find(n => n.getAttribute('title') === path);
+  if (sel) sel.classList.add('on');
+}
+
+async function copyArtifact() {
+  try { await navigator.clipboard.writeText(S.artText || ''); toast('Copied'); }
+  catch (e) { toast('Clipboard blocked by the browser', 'err'); }
+}
+
+function mdToHtml(src) {
+  const codes = [];
+  let out = esc(deesc(src || '')).replace(/```[a-z]*\n([\s\S]*?)```/g, (m, code) => {
+    codes.push(`<pre class="code">${code}</pre>`);
+    return `\u0001${codes.length - 1}\u0001`;
+  });
+  out = out
+    .replace(/^### (.*)$/gm, '<div style="font-weight:600;margin:.7rem 0 .2rem">$1</div>')
+    .replace(/^## (.*)$/gm, '<div style="font-weight:600;font-size:var(--fs-15);margin:.9rem 0 .25rem">$1</div>')
+    .replace(/^# (.*)$/gm, '<div style="font-weight:600;font-size:var(--fs-15);margin:.2rem 0 .4rem">$1</div>')
+    .replace(/\*\*(.+?)\*\*/g, '<b>$1</b>')
+    .replace(/`([^`]+)`/g, '<code>$1</code>')
+    .replace(/^- (.*)$/gm, '<div>• $1</div>')
+    .replace(/^(\d+)\. (.*)$/gm, '<div>$1. $2</div>')
+    .replace(/\n{2,}/g, '<div style="height:.5rem"></div>')
+    .replace(/\n/g, '<br>');
+  out = out.replace(/\u0001(\d+)\u0001/g, (m, i) => codes[+i] || '');
+  return `<div class="md">${out}</div>`;
+}
+
+function fmtSize(n) {
+  if (!n) return '';
+  if (n < 1024) return n + ' B';
+  if (n < 1024 * 1024) return (n / 1024).toFixed(1) + ' KB';
+  return (n / 1048576).toFixed(1) + ' MB';
 }
 
 async function loadTraffic() {
@@ -1027,19 +1364,27 @@ function graphHtml(g) {
                    finding: '#8a2f3f', hint: '#8a6b2f', digest: line};
   let svg = `<svg width="${width}" height="${height}" xmlns="http://www.w3.org/2000/svg"
       font-family="-apple-system,Segoe UI,Roboto,sans-serif">`;
+  const active = !!(S.data && (S.data.running || S.data.approval));
+  const liveSet = new Set(nodes.filter(n => n.state === 'running' && active).map(n => n.id));
   edges.forEach(e => {
     const a = pos[e.src], b = pos[e.dst]; if (!a || !b) return;
     const x1 = a.x + W, y1 = a.y + H / 2, x2 = b.x, y2 = b.y + H / 2, mx = (x1 + x2) / 2;
-    svg += `<path d="M${x1},${y1} C${mx},${y1} ${mx},${y2} ${x2},${y2}" fill="none" stroke="${line}" stroke-width="1.2"/>`;
+    const hot = liveSet.has(e.src) || liveSet.has(e.dst);
+    svg += `<path class="${hot ? 'live-edge' : ''}" d="M${x1},${y1} C${mx},${y1} ${mx},${y2} ${x2},${y2}"
+      fill="none" stroke="${hot ? brand : line}" stroke-width="${hot ? 1.6 : 1.2}"/>`;
   });
   nodes.forEach(n => {
     const p = pos[n.id], tint = palette[n.kind] || line, sel = n.id === S.nodeSel;
-    svg += `<g style="cursor:pointer" onclick="showNode(${n.id})">
+    const live = n.state === 'running' && active;
+    const stale = n.state === 'running' && !active;
+    svg += `<g style="cursor:pointer${live ? ';animation:nodepulse 1.7s ease-in-out infinite' : ''}"
+      class="${live ? 'live-node' : ''}" onclick="showNode(${n.id})">
       <title>${esc(n.kind)} #${n.id}: ${esc(n.label || '')}</title>
       <rect x="${p.x}" y="${p.y}" width="${W}" height="${H}" rx="6" fill="${surface}"
-        stroke="${sel ? brand : tint}" stroke-width="${sel ? 2.2 : 1.2}"/>
+        stroke="${sel ? brand : (live ? brand : tint)}" stroke-width="${sel ? 2.4 : (live ? 2 : 1.2)}"/>
       <rect x="${p.x}" y="${p.y + 6}" width="3" height="${H - 12}" rx="2" fill="${tint}"/>
-      <text x="${p.x + 11}" y="${p.y + 14}" fill="${dim}" font-size="9">${esc(n.kind)} #${n.id}</text>
+      <text x="${p.x + 11}" y="${p.y + 14}" fill="${dim}" font-size="9">${esc(n.kind)} #${n.id}${
+        live ? ' · running' : stale ? ' · stale' : (n.state && ['done','exhausted','blocked','stopped'].includes(n.state) ? ' · ' + esc(n.state) : '')}</text>
       <text x="${p.x + 11}" y="${p.y + 26}" fill="${fg}" font-size="10">${esc((n.label || '').slice(0, 32))}</text>
       </g>`;
   });
@@ -1047,8 +1392,16 @@ function graphHtml(g) {
   return `<div class="filters">
       ${kinds.map(k => `<span class="chip ${S.graphKind === k ? 'on' : ''}"
         onclick="S.graphKind='${S.graphKind === k ? '' : k}'; setTab('graph')">${k}</span>`).join('')}
-      <span class="hint">${nodes.length}/${allNodes.length} nodes · ${edges.length} edges</span>
+      <span class="hint">${nodes.length}/${allNodes.length} nodes · ${edges.length} edges${
+        liveSet.size ? ` · <b style="color:var(--brand)">${liveSet.size} running</b>` : ''}${
+        (S.data && S.data.running) ? ' · live' : ''}</span>
       <span style="flex:1"></span><button class="sm ghost" onclick="loadGraph()">Refresh</button></div>
+    <div class="hint" style="margin:-.2rem 0 .5rem">legend:
+      <span class="chip" style="border-color:var(--brand)">running</span>
+      <span class="chip" style="border-color:var(--ok)">done</span>
+      <span class="chip" style="border-color:var(--bad)">blocked / failed</span>
+      <span class="chip">queued</span>
+      ${!active ? ' · nothing is running right now, so no node pulses' : ''}</div>
     <div id="graphwrap" style="overflow:auto;border:1px solid var(--line);border-radius:10px;
       background:var(--surface)">${svg}</div>
     <div id="nodedetail" style="margin-top:.6rem">${S.nodeSel ? '' : '<p class="hint">Select a node for its payload.</p>'}</div>`;
@@ -1348,6 +1701,12 @@ async function setFinding(id, status) {
 function exportMd() { window.location = '/api/export?task=' + S.task; }
 
 /* ---------- helpers ---------- */
+function deesc(s) {
+  const str = String(s || '');
+  if (str.includes('\n')) return str;          // real newlines already
+  return str.replace(/\\n/g, '\n').replace(/\\t/g, '\t');
+}
+
 function hdr(v) {
   if (v === null || v === undefined) return '';
   if (typeof v === 'string') {
