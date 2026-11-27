@@ -45,6 +45,19 @@ FILE_EXT = {"php", "html", "htm", "js", "mjs", "json", "jsonl", "txt", "aspx", "
 
 LOOPBACK = {"127.0.0.1", "::1", "localhost", "0.0.0.0"}
 
+# Commands that are legitimate in an engagement but deserve a human decision before
+# they run: state-changing requests, privileged actions, exploitation tooling and
+# writes outside the engagement folder. Destructive patterns stay in BUILTIN_DENY.
+COMMAND_GATE = [
+    (r"\bcurl\b[^\n]*(-X|--request)\s*(POST|PUT|PATCH|DELETE)", "state-changing HTTP request"),
+    (r"\b(sudo|doas)\b", "privileged command"),
+    (r"\b(msfconsole|msfvenom|sqlmap|hydra|medusa|responder|secretsdump|mimikatz|"
+     r"crackmapexec|netexec|impacket-\w+)\b", "exploitation tooling"),
+    (r"\b(apt|apt-get|pip|pip3|npm|gem|cargo)\s+(install|add)\b", "installs software on the operator box"),
+    (r"\bgit\s+clone\b", "clones a repository onto the operator box"),
+    (r">\s*/(?!home/kali/.titan)", "writes outside the engagement folder"),
+]
+
 
 class Scope:
     """Authorized target set for one task.
@@ -347,6 +360,34 @@ class Guard:
             cmd = " ".join(str(v) for v in args.values() if isinstance(v, str))
         return self._deny_hit(cmd)
 
+    def _command_gate(self, tool: str, cmd: str) -> str:
+        """Queue (or auto-approve) commands that need an operator decision.
+
+        Returns a block message, or "" when the command may run.
+        """
+        if tool not in ("bash", "webfetch") or not self.settings.allow_shell:
+            return ""
+        text = cmd or ""
+        for pattern, label in COMMAND_GATE:
+            if not re.search(pattern, text, re.I):
+                continue
+            policy = self.store.scope_policy(self.task_id)
+            if policy.get("auto_commands"):
+                cid = self.store.add_command_request(self.task_id, self.worker, tool, text, label)
+                if cid:
+                    self.store.decide_command_request(cid, True, auto=True)
+                self.store.audit(self.task_id, self.worker, tool, "allow",
+                                 f"auto-approved command: {label}", text)
+                return ""
+            if self.store.command_approved(self.task_id, text):
+                return ""
+            cid = self.store.add_command_request(self.task_id, self.worker, tool, text, label)
+            extra = (" It is waiting in the Commands tab." if cid else
+                     " It is already waiting for approval.")
+            return (f"{BANNER} This call needs operator approval: {label}."
+                    f"{extra} Do not work around it; after approval, repeat the exact command.")
+        return ""
+
     def check(self, tool: str, args: dict) -> tuple[bool, str]:
         """Return (allowed, message). Records the decision in the audit log."""
         cmd = str(args.get("command") or args.get("url") or "")
@@ -362,6 +403,10 @@ class Guard:
                                  f"operator constraint: {c['text']}", cmd)
                 return False, (f"{BANNER} This call was intercepted. Reason: operator "
                                f"constraint '{c['text']}'. This operation is forbidden.")
+        gate_msg = self._command_gate(tool, cmd)
+        if gate_msg:
+            self.store.audit(self.task_id, self.worker, tool, "block", gate_msg, cmd)
+            return False, gate_msg
         if tool in ("bash", "webfetch") and self.settings.allow_shell:
             self.refresh()
             ok, why, host = self.scope.check_text(cmd)

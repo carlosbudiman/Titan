@@ -294,6 +294,7 @@ One process, no build step, no JavaScript dependencies, no external assets.
 |---|---|
 | **Overview** | intent timeline (one lane per worker, bar = wall-clock duration, click to open), goals, constraints, queue with steer/stop, operator notes, scope editor, live agents, untested assets |
 | **Scope** | approved targets with what they resolve to, discovered hosts waiting for approval, exclusions, and the auto-approval policy |
+| **Commands** | commands the guard holds for a human decision — state-changing requests, privileged actions, exploitation tooling, installs, writes outside the folder — with approve/reject, history, and an auto-approve switch |
 | **Enumeration** | per host: ports and services, web surface, discovered paths with status codes, and observations tagged observed/inferred with the tool and time that produced them |
 | **Findings** | severity and status filters, inline evidence and reproduction, status workflow, copy as markdown, report preview |
 | **Artifacts** | the engagement folder itself — a tree of `enumeration/`, `findings/`, `poc/`, `evidence/`, `report/`, with a viewer for markdown, JSON, text and images, plus the recorded traffic |
@@ -312,6 +313,11 @@ out. It prints cleanly to PDF from the browser.
 `domain=example.com` allows the apex, every subdomain and any address those names
 resolve to, so a port scan against the IP is not refused. `subdomain=` is exact,
 `ip`/`cidr` are literal, `url=` carries a port restriction, `exclude=` always wins.
+
+Approval is split in two. **Scope** decides *where* the run may go; **Commands**
+decides *what* it may do there (state-changing requests, sudo, exploitation tooling,
+installs, writes outside the folder). Both have their own auto-approve switch, and an
+approved host does not approve a risky command.
 
 Anything the guard refuses is recorded instead of silently dropped: the host appears
 in **Scope → Discovered** with the tool and command that found it, and one click

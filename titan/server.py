@@ -139,6 +139,8 @@ def serve(settings, task_id: int = 0) -> int:
                     "scope": {"entries": store.scope(tid),
                               "pending": store.scope_candidates(tid, "pending"),
                               "policy": store.scope_policy(tid)},
+                    "commands": {"pending": store.command_requests(tid, "pending")[:30],
+                                 "policy": store.scope_policy(tid)},
                     "coverage": store.coverage_detail(tid),
                     "findings": store.findings(tid),
                     "assets": store.assets(tid, limit=200),
@@ -194,6 +196,14 @@ def serve(settings, task_id: int = 0) -> int:
                     "matches": {h: sc.allows_host(h) for h in
                                 sorted({c["host"] for c in store.scope_candidates(tid, None)})},
                 })
+
+            if path == "/api/commands":
+                tid = self._tid(q)
+                if not store.get_task(tid):
+                    return self._json({"error": f"no task {tid}"}, 404)
+                return self._json({"pending": store.command_requests(tid, "pending"),
+                                   "decided": store.command_requests(tid, None)[:30],
+                                   "policy": store.scope_policy(tid)})
 
             if path == "/api/artifacts":
                 tid = self._tid(q)
@@ -452,8 +462,11 @@ def serve(settings, task_id: int = 0) -> int:
                 tid = int(body.get("task") or 0)
                 if not store.get_task(tid):
                     return self._json({"error": f"no task {tid}"}, 404)
-                pol = store.set_scope_policy(tid, auto_subdomains=body.get("auto_subdomains"),
-                                             auto_same_ip=body.get("auto_same_ip"))
+                pol = store.set_scope_policy(tid,
+                                             auto_subdomains=body.get("auto_subdomains"),
+                                             auto_same_ip=body.get("auto_same_ip"),
+                                             auto_any=body.get("auto_any"),
+                                             auto_commands=body.get("auto_commands"))
                 return self._json({"policy": pol})
 
             if path == "/api/chat":
@@ -467,6 +480,16 @@ def serve(settings, task_id: int = 0) -> int:
                 except Exception as e:  # noqa: BLE001
                     return self._json({"error": f"{type(e).__name__}: {e}"}, 500)
                 return self._json({"reply": reply})
+
+            if path == "/api/commands/decide":
+                cid = int(body.get("id") or 0)
+                res = store.decide_command_request(cid, bool(body.get("approve")),
+                                                   auto=bool(body.get("auto")))
+                if not res:
+                    return self._json({"error": f"no command request {cid}"}, 404)
+                store.log(res["task"], "operator", "command",
+                          f"{res['state']}: {res['command'][:160]}")
+                return self._json(res)
 
             if path == "/api/hint":
                 tid = int(body.get("task") or 0)

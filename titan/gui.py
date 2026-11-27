@@ -232,6 +232,20 @@ kbd{font-family:inherit;border:1px solid var(--line);border-bottom-width:2px;bor
 .nitem.unread{background:var(--sel)}
 .nitem.unread:before{content:'';position:absolute;left:.28rem;top:.75rem;width:5px;height:5px;
   border-radius:50%;background:var(--brand)}
+/* chat: overview card + dock */
+.chatmini{flex:1;min-height:10rem;max-height:20rem;overflow:auto;display:flex;flex-direction:column;
+  gap:.35rem;padding-right:.2rem}
+.chatmini .bubble{font-size:var(--fs-12)}
+.cactions{display:flex;gap:.3rem;flex-wrap:wrap;margin:-.15rem 0 .35rem}
+.cactions button{opacity:.85}
+.qstrip{border-top:1px solid var(--line);margin-top:.5rem;max-height:11rem;overflow:auto}
+.ctabs{display:flex;gap:.2rem;padding:.35rem .5rem 0;overflow:auto;border-bottom:1px solid var(--line)}
+.ctab{border:0;background:none;color:var(--dim);font-size:var(--fs-11);padding:.25rem .45rem;
+  border-radius:6px 6px 0 0;position:relative;white-space:nowrap}
+.ctab:hover{background:var(--surface-2)}
+.ctab.on{background:var(--sel);color:var(--brand);font-weight:600}
+.cdot{display:inline-block;width:5px;height:5px;border-radius:50%;background:var(--brand);
+  margin-left:.25rem;vertical-align:middle}
 /* chat dock */
 .chat{position:fixed;right:.9rem;bottom:.9rem;width:26rem;max-width:calc(100vw - 1.6rem);
   height:30rem;background:var(--surface);border:1px solid var(--line);border-radius:12px;
@@ -303,12 +317,12 @@ let S = {tasks: [], task: 0, data: null, tab: 'overview', view: 'task',
          settings: null, skills: null, traffic: null, trafficId: 0, trafficQ: '',
          graph: null, nodeSel: 0, models: [], lastSig: '', findSev: '', findStatus: '',
          findQ: '', actWorker: '', actKind: '', graphKind: '', expanded: {},
-         lastResult: {}, scopeInfo: null, artifacts: null, artPath: '', artText: '',
+         lastResult: {}, scopeInfo: null, commands: null, artifacts: null, artPath: '', artText: '',
          artMode: 'files'};
 let SEEN = null;
-const TABS = [['overview','Overview'],['scope','Scope'],['enumeration','Enumeration'],
-              ['findings','Findings'],['artifacts','Artifacts'],['activity','Activity'],
-              ['graph','Graph']];
+const TABS = [['overview','Overview'],['scope','Scope'],['commands','Commands'],
+              ['enumeration','Enumeration'],['findings','Findings'],['artifacts','Artifacts'],
+              ['activity','Activity'],['graph','Graph']];
 
 let SEENKEYS = new Set(JSON.parse(localStorage.getItem('titan-seen') || '[]'));
 let NOTIFS = JSON.parse(localStorage.getItem('titan-notifs') || '[]');
@@ -387,51 +401,122 @@ async function openNotif(i) {
   if (n.kind === 'finding') setTab('findings');
   else if (n.kind === 'fact') setTab('enumeration');
   else if (n.kind === 'scope') setTab('scope');
+  else if (n.kind === 'command') setTab('commands');
   toggleNotifs();
 }
 
-/* ---------- planner chat ---------- */
+/* ---------- planner chat (overview card + dock, per-engagement) ---------- */
+function thread(taskId) {
+  const id = taskId || S.task;
+  if (!CHAT[id]) CHAT[id] = {msgs: [], busy: false, seen: 0};
+  return CHAT[id];
+}
+
+function pushMsg(taskId, role, text) {
+  const th = thread(taskId);
+  th.msgs.push({role: role, text: text, ts: Date.now()});
+  if (th.msgs.length > 80) th.msgs = th.msgs.slice(-80);
+}
+
+function chatBubbles(taskId) {
+  const th = thread(taskId);
+  if (!th.msgs.length) {
+    return `<div class="bubble sys">Ask about progress or say what to do next.
+      It can queue intents, hint the planner and steer a running worker.</div>`;
+  }
+  return th.msgs.map((m, i) => {
+    if (m.role === 'me') {
+      return `<div class="bubble me">${esc(m.text)}</div>
+        <div class="cactions"><button class="sm ghost" title="Send this instruction to the planner"
+          onclick="hintFrom(${taskId}, ${i})">Send as hint</button></div>`;
+    }
+    const ids = [...new Set((m.text.match(/#(\d+)/g) || []).map(x => x.slice(1)))].slice(0, 3);
+    return `<div class="bubble you">${esc(m.text)}</div>
+      <div class="cactions">
+        <button class="sm ghost" onclick="hintFrom(${taskId}, ${i})">Queue as hint</button>
+        ${ids.map(id => `<button class="sm" onclick="steer(${id})">Steer #${id}</button>`).join('')}
+      </div>`;
+  }).join('');
+}
+
+async function hintFrom(taskId, idx) {
+  const th = thread(taskId);
+  const m = th.msgs[idx];
+  if (!m) return;
+  const text = (m.text || '').slice(0, 800).trim();
+  if (!text) return;
+  const j = await api('/api/hint', {task: taskId, text: text});
+  if (j.error) { toast(j.error, 'err'); return; }
+  toast('Queued as a hint on engagement #' + taskId);
+}
+
 function toggleChat() {
   const host = $('#chatHost');
   if (host.innerHTML) { host.innerHTML = ''; return; }
+  S.chatTask = S.chatTask || S.task;
   renderChat();
   setTimeout(() => { const el = $('#chatText'); if (el) el.focus(); }, 50);
 }
 
+function chatTabs() {
+  const ids = [...new Set([...Object.keys(CHAT).map(Number), S.task, S.chatTask].filter(Boolean))]
+    .sort((a, b) => a - b);
+  return `<div class="ctabs">${ids.map(id => {
+    const th = thread(id);
+    const t = (S.tasks || []).find(x => x.id === id) || {};
+    const unread = th.msgs.filter(m => m.ts > th.seen).length && id !== S.chatTask;
+    return `<button class="ctab ${id === S.chatTask ? 'on' : ''}" onclick="switchChat(${id})"
+      title="${esc(t.title || t.goal || '')}">#${id}${unread ? '<i class="cdot"></i>' : ''}</button>`;
+  }).join('')}</div>`;
+}
+
+function switchChat(id) { S.chatTask = id; thread(id).seen = Date.now(); renderChat(); }
+
 function renderChat() {
   const host = $('#chatHost');
   if (!host) return;
-  const msgs = CHAT[S.task] || [];
+  const id = S.chatTask || S.task;
+  const th = thread(id);
   host.innerHTML = `<div class="chat">
-    <div class="ch"><span>Planner · engagement #${S.task || '—'}</span>
+    <div class="ch"><span>Planner · <b>#${id}</b></span>
       <button class="iconbtn" onclick="toggleChat()">×</button></div>
-    <div class="body" id="chatBody">
-      ${msgs.length ? msgs.map(m => `<div class="bubble ${m.role === 'me' ? 'me' : m.role === 'sys' ? 'sys' : 'you'}">${esc(m.text)}</div>`).join('')
-        : `<div class="bubble sys">Ask about progress, what it is doing, or tell it to change course.
-            It can queue hints and steer intents.</div>`}
-      ${S.chatBusy ? '<div class="bubble sys">thinking…</div>' : ''}
-    </div>
+    ${chatTabs()}
+    <div class="body" id="chatBody">${chatBubbles(id)}
+      ${th.busy ? '<div class="bubble sys">thinking…</div>' : ''}</div>
     <div class="cf">
-      <input id="chatText" placeholder="e.g. why are we stuck on 8080?"
-        onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();sendChat()}">
-      <button class="pri" onclick="sendChat()" ${S.chatBusy ? 'disabled' : ''}>Send</button>
+      <input id="chatText" placeholder="ask about #${id}, or say what to do next"
+        onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();sendChat('dock')}">
+      <button class="pri" onclick="sendChat('dock')" ${th.busy ? 'disabled' : ''}>Send</button>
     </div></div>`;
   const body = $('#chatBody');
   if (body) body.scrollTop = body.scrollHeight;
 }
 
-async function sendChat() {
-  const el = $('#chatText');
-  const text = (el && el.value || '').trim();
-  if (!text || !S.task) return;
-  CHAT[S.task] = CHAT[S.task] || [];
-  CHAT[S.task].push({role: 'me', text});
-  S.chatBusy = true; renderChat();
-  const j = await api('/api/chat', {task: S.task, message: text});
-  S.chatBusy = false;
-  CHAT[S.task].push({role: 'you', text: j.error ? 'Error: ' + j.error : (j.reply || '(no reply)')});
-  renderChat();
-  if (!j.error) refresh(true);
+function renderChatCard() {
+  const el = $('#ovChat');
+  if (!el) return;
+  const k = el.scrollTop;
+  el.innerHTML = chatBubbles(S.task) + (thread(S.task).busy ? '<div class="bubble sys">thinking…</div>' : '');
+  el.scrollTop = el.scrollHeight || k;
+}
+
+async function sendChat(source) {
+  const id = source === 'dock' ? (S.chatTask || S.task) : S.task;
+  const input = source === 'dock' ? $('#chatText') : $('#ovChatText');
+  const text = (input && input.value || '').trim();
+  if (!text || !id) return;
+  pushMsg(id, 'me', text);
+  if (input) input.value = '';
+  const th = thread(id);
+  th.busy = true;
+  if (source === 'dock') renderChat(); else renderChatCard();
+  if (source !== 'dock') renderChatCard();
+  const j = await api('/api/chat', {task: id, message: text});
+  th.busy = false;
+  pushMsg(id, 'you', j.error ? 'Error: ' + j.error : (j.reply || '(no reply)'));
+  if (source === 'dock') renderChat(); else renderChatCard();
+  if ($('#ovChat')) renderChatCard();
+  if (id === S.task) refresh(true);
 }
 
 function modal(opts) {
@@ -524,6 +609,7 @@ function shortcuts() {
       <tr><td><kbd>g</kbd> then <kbd>f</kbd></td><td>Findings</td></tr>
       <tr><td><kbd>g</kbd> then <kbd>e</kbd></td><td>Enumeration</td></tr>
       <tr><td><kbd>g</kbd> then <kbd>s</kbd></td><td>Scope</td></tr>
+      <tr><td><kbd>g</kbd> then <kbd>c</kbd></td><td>Commands</td></tr>
       <tr><td><kbd>g</kbd> then <kbd>v</kbd></td><td>Artifacts</td></tr>
       <tr><td><kbd>g</kbd> then <kbd>a</kbd></td><td>Activity</td></tr>
       <tr><td><kbd>g</kbd> then <kbd>r</kbd></td><td>Graph</td></tr>
@@ -540,7 +626,7 @@ document.addEventListener('keydown', e => {
   }
   if (e.key === 'g') { S.pendingG = Date.now(); return; }
   if (S.pendingG && Date.now() - S.pendingG < 900) {
-    const map = {o: 'overview', s: 'scope', e: 'enumeration', f: 'findings',
+    const map = {o: 'overview', s: 'scope', c: 'commands', e: 'enumeration', f: 'findings',
                  v: 'artifacts', a: 'activity', r: 'graph'};
     if (map[e.key]) { S.pendingG = 0; if (S.view !== 'task') goGlobal('task'); else setTab(map[e.key]); return; }
   }
@@ -615,6 +701,7 @@ function diffTaskCounts() {
 
 async function selectTask(id) {
   S.task = id; S.view = 'task'; S.nodeSel = 0; S.expanded = {}; S.trafficId = 0;
+  S.chatTask = id; thread(id).seen = Date.now();
   await loadTasks();
   await refresh(true);
   await loadLive();
@@ -650,6 +737,13 @@ async function refresh(force) {
              f ? f.summary : '', 'fact', () => { setTab('enumeration'); },
              'fact:' + S.task + ':' + no);
     }
+    const cmds = ((j.commands || {}).pending || []).length;
+    const prevCmds = ((prev.commands || {}).pending || []).length;
+    if (cmds > prevCmds) {
+      const c = ((j.commands || {}).pending || [])[0];
+      notify('Command waiting for approval', c ? (c.rule + ' — ' + (c.command || '').slice(0, 80)) : '',
+             'command', () => { setTab('commands'); }, 'cmd:' + S.task + ':' + (c ? c.id : cmds));
+    }
     const pend = ((j.scope || {}).pending || []).length;
     const prevPend = ((prev.scope || {}).pending || []).length;
     if (pend > prevPend) {
@@ -664,7 +758,8 @@ async function refresh(force) {
                j.enumeration && j.enumeration.counts ? j.enumeration.counts.services : 0,
                (j.findings || []).map(f => f.id + f.status).join(','),
                (j.timeline || []).length,
-               ((j.scope || {}).pending || []).length].join('|');
+               ((j.scope || {}).pending || []).length,
+               ((j.commands || {}).pending || []).length].join('|');
   renderCrumbs();
   if (!force && sig === S.lastSig && prev) { renderLiveFromData(); return; }
   S.lastSig = sig;
@@ -683,6 +778,7 @@ function render() {
   const sc = $('#main');
   const keepMain = sc ? sc.scrollTop : 0;
   const keepTree = ($('#artTree') || {}).scrollTop || 0;
+  const keepChat = ($('#ovChat') || {}).scrollTop || 0;
   const keepGraph = ($('#graphwrap') || {}).scrollLeft || 0;
   const dense = document.documentElement.getAttribute('data-density') === 'compact';
   const cov = ov.coverage;
@@ -720,6 +816,8 @@ function render() {
       <span class="chip">round ${ov.round}</span>
       ${(d.scope && (d.scope.pending || []).length) ? `<span class="chip s-running"
         style="cursor:pointer" onclick="setTab('scope')">${d.scope.pending.length} host(s) need scope</span>` : ''}
+      ${(d.commands && (d.commands.pending || []).length) ? `<span class="chip s-running"
+        style="cursor:pointer" onclick="setTab('commands')">${d.commands.pending.length} command(s) need approval</span>` : ''}
       <span style="flex:1"></span>
       <span class="mono muted" style="font-size:var(--fs-11)" title="artifacts: ${esc(d.workdir || '')}">${esc(d.workdir || '~/.titan/runs/tasks/' + d.task.id)}</span>
       ${d.running ? '<span class="chip s-running">● running</span>' : ''}
@@ -740,6 +838,7 @@ function render() {
   const pane = $('#pane');
   if (S.tab === 'overview') pane.innerHTML = tabOverview(d);
   if (S.tab === 'scope') pane.innerHTML = tabScope(d, S.scopeInfo);
+  if (S.tab === 'commands') pane.innerHTML = tabCommands(d, S.commands);
   if (S.tab === 'findings') pane.innerHTML = tabFindings(d);
   if (S.tab === 'enumeration') pane.innerHTML = tabEnumeration(d);
   if (S.tab === 'artifacts') { pane.innerHTML = tabArtifacts(d); loadArtifacts(); }
@@ -747,9 +846,12 @@ function render() {
   if (S.tab === 'graph') { pane.innerHTML = '<div class="skel" style="height:8rem"></div>'; loadGraph(); }
   if (sc) sc.scrollTop = keepMain;
   const tree = $('#artTree'); if (tree) tree.scrollTop = keepTree;
+  const oc = $('#ovChat'); if (oc) oc.scrollTop = keepChat;
   const gw = $('#graphwrap'); if (gw) gw.scrollLeft = keepGraph;
   renderLiveFromData();
   renderBell();
+  if (S.tab === 'overview') thread(S.task).seen = Date.now();
+  renderChatCard();
 }
 
 function typingGuard() { return false; }
@@ -760,6 +862,7 @@ function setTab(t) {
   render();
   if (sc) sc.scrollTop = st;
   if (t === 'scope' && S.task) loadScope();
+  if (t === 'commands' && S.task) loadCommands();
   if (t === 'artifacts' && S.task) loadArtifacts();
 }
 
@@ -787,12 +890,23 @@ function tabOverview(d) {
       ${ov.constraints.map(c => `<div><span class="chip">${esc(c.kind)}</span> ${esc(c.text)}</div>`).join('')
         || '<span class="muted">none stated</span>'}
     </div>
-    <div class="card"><h3 style="margin:0 0 .5rem;font-size:var(--fs-15)">Queue</h3>
-      ${queue.map(intentRow).join('') || '<div class="muted">idle — nothing dispatched</div>'}
-      <hr>
-      <label class="f"><span>Add a hint for the next planning rounds</span>
-        <textarea id="hintText" placeholder="e.g. focus on authenticated areas, ignore the marketing site"></textarea></label>
-      <button class="pri" onclick="addHint()">Queue hint</button>
+    <div class="card" style="display:flex;flex-direction:column">
+      <div class="row" style="justify-content:space-between;margin-bottom:.4rem">
+        <h3 style="margin:0;font-size:var(--fs-15)">Planner</h3>
+        <span class="hint">top funnel — ask, or tell it what to do</span>
+      </div>
+      <div id="ovChat" class="chatmini">${chatBubbles(d.task.id)}</div>
+      <div class="cf" style="margin-top:.45rem">
+        <input id="ovChatText" placeholder="ask about progress, or say what to do next"
+          onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();sendChat('ov')}">
+        <button class="pri" onclick="sendChat('ov')">Send</button>
+      </div>
+      <div class="qstrip">
+        <div class="hint" style="margin:.5rem 0 .25rem;text-transform:uppercase;letter-spacing:.05em">
+          Queue · ${queue.filter(i => i.state === 'running').length} running ·
+          ${queue.filter(i => i.state !== 'running').length} open</div>
+        ${queue.map(intentRow).join('') || '<div class="muted">idle — nothing dispatched</div>'}
+      </div>
     </div>
   </div>
 
@@ -1068,6 +1182,70 @@ async function setScopePolicy(patch) {
   const j = await api('/api/scope/policy', {task: S.task, ...patch});
   if (j.error) { toast(j.error, 'err'); return; }
   toast('Scope policy updated'); await refresh(true); await loadScope();
+}
+
+/* ---------- command approvals ---------- */
+async function loadCommands() {
+  if (!S.task) return;
+  S.commands = await api('/api/commands?task=' + S.task);
+  if (S.tab !== 'commands') return;
+  const pane = $('#pane');
+  if (pane) pane.innerHTML = tabCommands(S.data, S.commands);
+}
+
+function tabCommands(d, info) {
+  info = info || S.commands || {pending: (d.commands || {}).pending || [],
+    decided: [], policy: (d.commands || {}).policy || {}};
+  const pending = info.pending || [];
+  const decided = (info.decided || []).filter(c => c.state !== 'pending').slice(0, 12);
+  const policy = info.policy || {};
+  return `<div class="card" style="margin-bottom:.8rem">
+      <div class="row" style="justify-content:space-between">
+        <div><h3 style="margin:0;font-size:var(--fs-15)">Command approval</h3>
+          <div class="hint">Commands the guard holds for a human decision — state-changing requests,
+            privileged actions, exploitation tooling, installs and writes outside the folder.
+            Scope is separate: an approved host does not approve a risky command.</div></div>
+        <label class="row" style="gap:.4rem;white-space:nowrap">
+          <input type="checkbox" style="width:auto" ${policy.auto_commands ? 'checked' : ''}
+            onchange="setCommandPolicy(this.checked)">
+          <span>Auto-approve commands</span></label>
+      </div></div>
+    ${pending.length ? pending.map(c => `
+      <div class="card" style="margin-bottom:.6rem">
+        <div class="row" style="align-items:flex-start">
+          <span class="chip s-running">pending</span>
+          <div style="flex:1;min-width:12rem">
+            <div class="hint">${esc(c.rule || '')} · ${esc(c.worker || '')} · ${esc(timeAgo(c.created_at))}</div>
+            <pre style="margin:.25rem 0">${esc(c.command)}</pre>
+          </div>
+          <div class="row">
+            <button class="pri sm" onclick="decideCommand(${c.id}, true)">Approve</button>
+            <button class="sm" onclick="decideCommand(${c.id}, false)">Reject</button></div>
+        </div></div>`).join('')
+      : `<div class="empty"><b>Nothing waiting</b>Commands that need a decision appear here;
+          with auto-approval on, they run and are recorded instead.</div>`}
+    ${decided.length ? `<div class="card"><div class="hint" style="text-transform:uppercase;
+        letter-spacing:.05em;margin-bottom:.3rem">Recently decided</div>
+      <table><tr><th>State</th><th>Command</th><th>Rule</th><th>When</th></tr>
+        ${decided.map(c => `<tr><td><span class="chip s-${c.state === 'rejected' ? 'failed' : 'done'}">${esc(c.state)}</span></td>
+          <td class="mono">${esc((c.command || '').slice(0, 120))}</td>
+          <td class="muted">${esc(c.rule || '')}</td>
+          <td class="mono muted">${esc(c.decided_at ? c.decided_at.slice(11, 19) : '')}</td></tr>`).join('')}
+      </table></div>` : ''}`;
+}
+
+async function decideCommand(id, approve) {
+  const j = await api('/api/commands/decide', {id: id, approve: approve});
+  if (j.error) { toast(j.error, 'err'); return; }
+  toast((approve ? 'Approved — the worker can repeat the command' : 'Rejected') );
+  await refresh(true); await loadCommands();
+}
+
+async function setCommandPolicy(on) {
+  const j = await api('/api/scope/policy', {task: S.task, auto_commands: on});
+  if (j.error) { toast(j.error, 'err'); return; }
+  toast(on ? 'Commands are auto-approved (still recorded)' : 'Commands now wait for you');
+  await refresh(true); await loadCommands();
 }
 
 /* ---------- findings ---------- */

@@ -162,8 +162,8 @@ class CycleTest(unittest.TestCase):
         self.assertFalse(ok)
         self.assertIn("work directory", msg)
 
-        ok, msg = g.check("bash", {"command": "sqlmap -u https://example.com/?a=1"})
-        self.assertTrue(ok)  # constraint is on the task that declared it, not this one
+        ok, msg = g.check("bash", {"command": "curl -s https://example.com/?a=1"})
+        self.assertTrue(ok)  # the deny constraint belongs to another task
 
     def test_operator_constraint_blocks(self):
         from titan.guard import Guard, Scope
@@ -496,6 +496,42 @@ class CycleTest(unittest.TestCase):
         self.assertEqual(self.eng.store.scope_policy(tid)["auto_any"], 0)
         self.eng.store.set_scope_policy(tid, auto_any=True)
         self.assertEqual(self.eng.store.scope_policy(tid)["auto_any"], 1)
+
+    def test_command_gate_queues_then_allows(self):
+        from titan.guard import Guard, Scope
+
+        tid = self.eng.new_task("cmd gate", scope=[{"kind": "domain", "value": "example.com"}])
+        store, settings = self.eng.store, self.eng.settings
+        cmd = "curl -X POST https://example.com/api -d 'x=1'"
+        g = Guard(store, settings, tid, "w1", Scope(store.scope(tid)))
+        ok, msg = g.check("bash", {"command": cmd})
+        self.assertFalse(ok)
+        self.assertIn("needs operator approval", msg)
+        reqs = store.command_requests(tid)
+        self.assertEqual(len(reqs), 1)
+        self.assertEqual(store.decide_command_request(reqs[0]["id"], True)["state"], "approved")
+        g2 = Guard(store, settings, tid, "w1", Scope(store.scope(tid)))
+        self.assertTrue(g2.check("bash", {"command": cmd})[0])
+
+    def test_read_only_command_is_not_gated(self):
+        from titan.guard import Guard, Scope
+
+        tid = self.eng.new_task("cmd gate ro", scope=[{"kind": "domain", "value": "example.com"}])
+        store, settings = self.eng.store, self.eng.settings
+        g = Guard(store, settings, tid, "w1", Scope(store.scope(tid)))
+        self.assertTrue(g.check("bash", {"command": "curl -s https://example.com/health"})[0])
+        self.assertFalse(store.command_requests(tid))
+
+    def test_auto_command_policy_records_and_allows(self):
+        from titan.guard import Guard, Scope
+
+        tid = self.eng.new_task("cmd auto", scope=[{"kind": "domain", "value": "example.com"}])
+        store, settings = self.eng.store, self.eng.settings
+        store.set_scope_policy(tid, auto_commands=True)
+        g = Guard(store, settings, tid, "w1", Scope(store.scope(tid)))
+        self.assertTrue(g.check("bash", {"command": "sudo nmap -sS example.com"})[0])
+        reqs = store.command_requests(tid, None)
+        self.assertEqual(reqs[0]["state"], "auto")
 
     def test_scope_values_are_normalised(self):
         from titan.store import Store

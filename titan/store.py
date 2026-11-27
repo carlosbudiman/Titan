@@ -97,6 +97,19 @@ CREATE TABLE IF NOT EXISTS scope_candidates (
     UNIQUE(task_id, host)
 );
 
+CREATE TABLE IF NOT EXISTS command_requests (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    task_id    INTEGER NOT NULL REFERENCES explorations(id) ON DELETE CASCADE,
+    worker     TEXT,
+    tool       TEXT,
+    command    TEXT NOT NULL,
+    rule       TEXT,
+    state      TEXT NOT NULL DEFAULT 'pending',   -- pending | approved | rejected | auto
+    created_at TEXT NOT NULL,
+    decided_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_cmd_req ON command_requests(task_id, state);
+
 CREATE TABLE IF NOT EXISTS scope_policy (
     task_id        INTEGER PRIMARY KEY REFERENCES explorations(id) ON DELETE CASCADE,
     auto_subdomains INTEGER NOT NULL DEFAULT 1,
@@ -340,7 +353,8 @@ class Store:
             self.db.executescript(SCHEMA)
             for stmt in ("ALTER TABLE explorations ADD COLUMN workdir TEXT",
                          "ALTER TABLE explorations ADD COLUMN mode TEXT",
-                         "ALTER TABLE scope_policy ADD COLUMN auto_any INTEGER NOT NULL DEFAULT 0"):
+                         "ALTER TABLE scope_policy ADD COLUMN auto_any INTEGER NOT NULL DEFAULT 0",
+                         "ALTER TABLE scope_policy ADD COLUMN auto_commands INTEGER NOT NULL DEFAULT 0"):
                 try:
                     self.db.execute(stmt)
                 except sqlite3.OperationalError:
@@ -600,23 +614,27 @@ class Store:
     def scope_policy(self, task_id: int) -> dict:
         r = self.one("SELECT * FROM scope_policy WHERE task_id=?", (task_id,))
         if not r:
-            return {"auto_subdomains": 1, "auto_same_ip": 0, "auto_any": 0}
+            return {"auto_subdomains": 1, "auto_same_ip": 0, "auto_any": 0, "auto_commands": 0}
+        keys = r.keys()
         return {"auto_subdomains": int(r["auto_subdomains"]),
                 "auto_same_ip": int(r["auto_same_ip"]),
-                "auto_any": int(r["auto_any"] if "auto_any" in r.keys() else 0)}
+                "auto_any": int(r["auto_any"] if "auto_any" in keys else 0),
+                "auto_commands": int(r["auto_commands"] if "auto_commands" in keys else 0)}
 
     def set_scope_policy(self, task_id: int, **kw) -> dict:
         cur = self.scope_policy(task_id)
-        for k in ("auto_subdomains", "auto_same_ip", "auto_any"):
+        for k in ("auto_subdomains", "auto_same_ip", "auto_any", "auto_commands"):
             if k in kw and kw[k] is not None:
                 cur[k] = 1 if kw[k] else 0
         with self.lock:
             self.db.execute(
-                "INSERT INTO scope_policy(task_id,auto_subdomains,auto_same_ip,auto_any,updated_at)"
-                " VALUES(?,?,?,?,?) ON CONFLICT(task_id) DO UPDATE SET"
+                "INSERT INTO scope_policy(task_id,auto_subdomains,auto_same_ip,auto_any,"
+                "auto_commands,updated_at) VALUES(?,?,?,?,?,?) ON CONFLICT(task_id) DO UPDATE SET"
                 " auto_subdomains=excluded.auto_subdomains, auto_same_ip=excluded.auto_same_ip,"
-                " auto_any=excluded.auto_any, updated_at=excluded.updated_at",
-                (task_id, cur["auto_subdomains"], cur["auto_same_ip"], cur["auto_any"], now()))
+                " auto_any=excluded.auto_any, auto_commands=excluded.auto_commands,"
+                " updated_at=excluded.updated_at",
+                (task_id, cur["auto_subdomains"], cur["auto_same_ip"], cur["auto_any"],
+                 cur["auto_commands"], now()))
             self.db.commit()
         return cur
 
@@ -662,6 +680,51 @@ class Store:
                             (state, now(), cid))
             self.db.commit()
         return {"id": cid, "host": row["host"], "state": state}
+
+    # ------------------------------------------------------------ command approval
+    def add_command_request(self, task_id: int, worker: str, tool: str, command: str,
+                            rule: str) -> int:
+        """Queue a command that needs a human decision; dedupe on (task, command)."""
+        command = (command or "").strip()
+        if not command:
+            return 0
+        row = self.one("SELECT id,state FROM command_requests WHERE task_id=? AND command=?"
+                       " ORDER BY id DESC LIMIT 1", (task_id, command))
+        if row and row["state"] == "pending":
+            return 0
+        with self.lock:
+            cur = self.db.execute(
+                "INSERT INTO command_requests(task_id,worker,tool,command,rule,state,created_at)"
+                " VALUES(?,?,?,?,?,'pending',?)",
+                (task_id, worker, tool, command, rule, now()))
+            self.db.commit()
+            return int(cur.lastrowid or 0)
+
+    def command_requests(self, task_id: int, state: str | None = "pending") -> list[dict]:
+        sql = "SELECT * FROM command_requests WHERE task_id=?"
+        args: list[Any] = [task_id]
+        if state:
+            sql += " AND state=?"
+            args.append(state)
+        sql += " ORDER BY id DESC"
+        return [dict(r) for r in self.q(sql, args)]
+
+    def decide_command_request(self, cid: int, approve: bool, auto: bool = False) -> dict | None:
+        row = self.one("SELECT * FROM command_requests WHERE id=?", (cid,))
+        if not row:
+            return None
+        state = "rejected" if not approve else ("auto" if auto else "approved")
+        with self.lock:
+            self.db.execute("UPDATE command_requests SET state=?, decided_at=? WHERE id=?",
+                            (state, now(), cid))
+            self.db.commit()
+        return {"id": cid, "command": row["command"], "state": state, "task": row["task_id"]}
+
+    def command_approved(self, task_id: int, command: str) -> bool:
+        row = self.one("SELECT state FROM command_requests WHERE task_id=? AND command=?"
+                       " AND state IN ('approved','auto') ORDER BY id DESC LIMIT 1",
+                       (task_id, (command or "").strip()))
+        return bool(row)
 
     def add_constraint(self, task_id: int, kind: str, text: str, origin: str = "planner") -> None:
         self.x("INSERT INTO task_constraints(task_id,kind,text,origin,created_at) VALUES(?,?,?,?,?)",
