@@ -1,0 +1,7 @@
+- number of works still not changed live, and it always stays at 2
+- notification make a it in top right, and it keep refreshing, like the notification keeps showing even when ive viewed it already, make status for it viewed and new 
+- make a chatbot with the planner/coordinater, where you can ask about the progress also, and you can steer it from there
+- the scope is a mess, if you look at the BIOTA exmaple the scope includes commands not ip/url, make it properly auto approval, i still have to approve well in this case 'add to scope', make it options for auto add to scope also. 
+- when im browing in artifact or graph for the details, it resets to the top position it's annoying, esp when it's alot, please fix it so that the user experience is better, like the tree doesnt reset to the top
+- in the graph section, i like the moving lines but its not accurate, and also make it a better indication for when its running/exhausted, like colors, and if its running its like processing, also make it the bubbles clearer, assign actual titles not just snippets or hte first couple letters
+- graph section, like the zoom etc is still weird like i cannot see the most right

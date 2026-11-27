@@ -481,6 +481,22 @@ class CycleTest(unittest.TestCase):
         row = self.eng.store.one("SELECT state FROM exploration_nodes WHERE id=?", (iid,))
         self.assertEqual(row["state"], "stale")
 
+    def test_scope_commands_become_targets_not_strings(self):
+        s = self.eng.store
+        tid = self.eng.new_task("command scope", scope=[{"kind": "domain", "value": "example.com"}])
+        s.add_scope(tid, "domain", "nmap -p- --min-rate 1 10.20.30.40 -oN /tmp/out.txt", "operator")
+        s.add_scope(tid, "domain", "curl -s http://app.example.com:8080/exhibitor", "operator")
+        entries = {(e["kind"], e["value"]) for e in s.scope(tid)}
+        self.assertIn(("ip", "10.20.30.40"), entries)
+        self.assertIn(("url", "http://app.example.com:8080/exhibitor"), entries)
+        self.assertFalse(any(" " in v or v.startswith("-") for _, v in entries), entries)
+
+    def test_auto_any_policy_is_stored(self):
+        tid = self.eng.new_task("auto any")
+        self.assertEqual(self.eng.store.scope_policy(tid)["auto_any"], 0)
+        self.eng.store.set_scope_policy(tid, auto_any=True)
+        self.assertEqual(self.eng.store.scope_policy(tid)["auto_any"], 1)
+
     def test_scope_values_are_normalised(self):
         from titan.store import Store
         cases = [

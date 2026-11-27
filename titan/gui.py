@@ -212,6 +212,40 @@ label.f>span{display:block;color:var(--dim);font-size:var(--fs-12);margin-bottom
 @keyframes pop{from{opacity:0;transform:scale(.985)}to{opacity:1;transform:none}}
 kbd{font-family:inherit;border:1px solid var(--line);border-bottom-width:2px;border-radius:4px;
   padding:0 .3rem;font-size:var(--fs-11);background:var(--surface-2)}
+/* notifications panel */
+#bellBadge{position:absolute;top:-2px;right:-2px;background:var(--brand);color:#fff;
+  font-size:9px;min-width:13px;height:13px;border-radius:7px;line-height:13px;text-align:center;
+  padding:0 3px;font-weight:600}
+#bell{position:relative}
+.panel{position:absolute;right:.9rem;top:3.2rem;width:24rem;max-width:calc(100vw - 2rem);
+  background:var(--surface);border:1px solid var(--line);border-radius:10px;z-index:70;
+  box-shadow:0 12px 30px rgba(0,0,0,.14);overflow:hidden}
+.panel .ph{display:flex;align-items:center;justify-content:space-between;padding:.55rem .7rem;
+  border-bottom:1px solid var(--line);font-weight:600;font-size:var(--fs-12)}
+.panel .pl{max-height:22rem;overflow:auto}
+.nitem{padding:.5rem .7rem;border-bottom:1px solid var(--line);cursor:pointer;position:relative}
+.nitem:hover{background:var(--surface-2)}
+.nitem .nt{font-weight:600;font-size:var(--fs-12)}
+.nitem .nb{color:var(--dim);font-size:var(--fs-11);display:-webkit-box;-webkit-line-clamp:2;
+  -webkit-box-orient:vertical;overflow:hidden}
+.nitem .nm{color:var(--dim);font-size:10.5px;margin-top:.1rem}
+.nitem.unread{background:var(--sel)}
+.nitem.unread:before{content:'';position:absolute;left:.28rem;top:.75rem;width:5px;height:5px;
+  border-radius:50%;background:var(--brand)}
+/* chat dock */
+.chat{position:fixed;right:.9rem;bottom:.9rem;width:26rem;max-width:calc(100vw - 1.6rem);
+  height:30rem;background:var(--surface);border:1px solid var(--line);border-radius:12px;
+  z-index:75;display:flex;flex-direction:column;box-shadow:0 16px 40px rgba(0,0,0,.18)}
+.chat .ch{padding:.5rem .7rem;border-bottom:1px solid var(--line);display:flex;
+  justify-content:space-between;align-items:center;font-weight:600;font-size:var(--fs-12)}
+.chat .body{flex:1;overflow:auto;padding:.6rem .7rem;display:flex;flex-direction:column;gap:.5rem}
+.bubble{max-width:88%;padding:.45rem .6rem;border-radius:10px;font-size:var(--fs-12);
+  white-space:pre-wrap;overflow-wrap:anywhere}
+.bubble.me{align-self:flex-end;background:var(--brand);color:var(--on-brand)}
+.bubble.you{align-self:flex-start;background:var(--surface-2);border:1px solid var(--line)}
+.bubble.sys{align-self:center;color:var(--dim);font-size:var(--fs-11)}
+.chat .cf{border-top:1px solid var(--line);padding:.5rem;display:flex;gap:.4rem}
+
 /* artifacts tree */
 .tnode{padding:.2rem .35rem;border-radius:5px;font-size:var(--fs-12);cursor:pointer;
   white-space:nowrap;overflow:hidden;text-overflow:ellipsis;display:flex;gap:.4rem;
@@ -243,6 +277,9 @@ pre.code{max-height:32rem}
   <div class="crumbs" id="crumbs"></div>
   <span class="live" id="live"></span>
   <span class="spacer"></span>
+  <button class="iconbtn" id="bell" title="Notifications" onclick="toggleNotifs()">◔
+    <span id="bellBadge" style="display:none"></span></button>
+  <button class="iconbtn" id="chatbtn" title="Ask the planner" onclick="toggleChat()">✦</button>
   <button class="iconbtn" id="theme" title="Light / dark" onclick="toggleTheme()">◐</button>
   <button class="iconbtn" id="gear" title="Menu" onclick="toggleMenu()">⋯</button>
 </header>
@@ -253,6 +290,8 @@ pre.code{max-height:32rem}
   </aside>
   <section id="main"><div class="empty"><b>No engagement selected</b>Create one, or pick one from the list.</div></section>
 </main>
+<div id="notifHost"></div>
+<div id="chatHost"></div>
 <div id="toasts"></div>
 <div id="menuHost"></div>
 <div id="modalHost"></div>
@@ -271,30 +310,129 @@ const TABS = [['overview','Overview'],['scope','Scope'],['enumeration','Enumerat
               ['findings','Findings'],['artifacts','Artifacts'],['activity','Activity'],
               ['graph','Graph']];
 
-function notify(title, body, kind, onClick) {
+let SEENKEYS = new Set(JSON.parse(localStorage.getItem('titan-seen') || '[]'));
+let NOTIFS = JSON.parse(localStorage.getItem('titan-notifs') || '[]');
+let CHAT = {};        // taskId -> [{role, text}]
+
+function saveSeen() { localStorage.setItem('titan-seen', JSON.stringify([...SEENKEYS].slice(-500))); }
+function saveNotifs() { localStorage.setItem('titan-notifs', JSON.stringify(NOTIFS.slice(0, 60))); }
+
+function notify(title, body, kind, onClick, key, taskId) {
+  const k = key || (kind + '|' + title + '|' + String(body || '').slice(0, 60));
+  if (SEENKEYS.has(k)) return;
+  SEENKEYS.add(k); saveSeen();
+  NOTIFS.unshift({k, title, body: body || '', kind: kind || '', ts: Date.now(),
+                  task: taskId || S.task, read: false});
+  NOTIFS = NOTIFS.slice(0, 60); saveNotifs();
+  renderBell();
+  transientToast(title, body, kind, onClick);
+}
+
+function transientToast(title, body, kind, onClick) {
   const box = $('#toasts');
-  const key = kind + '|' + title;
-  const now = Date.now();
-  const existing = box.querySelector('[data-key="' + CSS.escape(key) + '"]');
-  if (existing && now - Number(existing.dataset.ts) < 8000) {
-    const n = Number(existing.dataset.n || 1) + 1;
-    existing.dataset.n = n; existing.dataset.ts = now;
-    existing.querySelector('.tt').textContent = title + ' ×' + n;
-    return;
-  }
   const el = document.createElement('div');
   el.className = 'toast ' + (kind || '') + (onClick ? ' click' : '');
-  el.dataset.key = key; el.dataset.ts = now; el.dataset.n = 1;
   el.innerHTML = `<span class="tt">${esc(title)}</span>${body ? `<span class="tb">${esc(body)}</span>` : ''}` +
     '<button class="tx" aria-label="Dismiss">×</button>';
   el.querySelector('.tx').onclick = ev => { ev.stopPropagation(); el.remove(); };
   if (onClick) el.onclick = () => { el.remove(); onClick(); };
   box.prepend(el);
-  while (box.children.length > 4) box.lastChild.remove();
-  setTimeout(() => el.remove(), onClick ? 12000 : 5000);
+  while (box.children.length > 3) box.lastChild.remove();
+  setTimeout(() => el.remove(), onClick ? 9000 : 5000);
 }
 
-function toast(msg, kind) { notify(msg, '', kind || 'ok'); }
+function toast(msg, kind) { transientToast(msg, '', kind || 'ok'); }
+
+function renderBell() {
+  const unread = NOTIFS.filter(n => !n.read).length;
+  const b = $('#bellBadge');
+  if (!b) return;
+  b.style.display = unread ? 'block' : 'none';
+  b.textContent = unread > 9 ? '9+' : String(unread);
+}
+
+function toggleNotifs() {
+  const host = $('#notifHost');
+  if (host.innerHTML) { host.innerHTML = ''; return; }
+  const rows = NOTIFS.length ? NOTIFS.map((n, i) => `
+    <div class="nitem ${n.read ? '' : 'unread'}" onclick="openNotif(${i})">
+      <div class="nt">${esc(n.title)}</div>
+      ${n.body ? `<div class="nb">${esc(n.body)}</div>` : ''}
+      <div class="nm">${timeAgo(new Date(n.ts).toISOString())}${n.task ? ' · engagement #' + n.task : ''}
+        ${n.read ? ' · viewed' : ' · new'}</div>
+    </div>`).join('')
+    : '<div class="empty" style="margin:.6rem"><b>Nothing yet</b>Findings, observations and scope requests land here.</div>';
+  host.innerHTML = `<div class="panel">
+      <div class="ph"><span>Notifications</span>
+        <span class="row" style="gap:.4rem">
+          <button class="sm ghost" onclick="markAllRead()">Mark all read</button>
+          <button class="sm ghost" onclick="clearNotifs()">Clear</button></span></div>
+      <div class="pl">${rows}</div></div>`;
+  setTimeout(() => document.addEventListener('click', closePanelsOnce, {once: true}), 0);
+}
+
+function closePanelsOnce(e) {
+  if (!e.target.closest('.panel') && !e.target.closest('#bell')) $('#notifHost').innerHTML = '';
+}
+
+function markAllRead() { NOTIFS.forEach(n => n.read = true); saveNotifs(); renderBell(); toggleNotifs(); toggleNotifs(); }
+function clearNotifs() { NOTIFS = []; saveNotifs(); renderBell(); toggleNotifs(); }
+
+async function openNotif(i) {
+  const n = NOTIFS[i];
+  if (!n) return;
+  n.read = true; saveNotifs(); renderBell();
+  $('#notifHost').innerHTML = '';
+  if (n.task && n.task !== S.task) await selectTask(n.task);
+  if (n.kind === 'finding') setTab('findings');
+  else if (n.kind === 'fact') setTab('enumeration');
+  else if (n.kind === 'scope') setTab('scope');
+  toggleNotifs();
+}
+
+/* ---------- planner chat ---------- */
+function toggleChat() {
+  const host = $('#chatHost');
+  if (host.innerHTML) { host.innerHTML = ''; return; }
+  renderChat();
+  setTimeout(() => { const el = $('#chatText'); if (el) el.focus(); }, 50);
+}
+
+function renderChat() {
+  const host = $('#chatHost');
+  if (!host) return;
+  const msgs = CHAT[S.task] || [];
+  host.innerHTML = `<div class="chat">
+    <div class="ch"><span>Planner · engagement #${S.task || '—'}</span>
+      <button class="iconbtn" onclick="toggleChat()">×</button></div>
+    <div class="body" id="chatBody">
+      ${msgs.length ? msgs.map(m => `<div class="bubble ${m.role === 'me' ? 'me' : m.role === 'sys' ? 'sys' : 'you'}">${esc(m.text)}</div>`).join('')
+        : `<div class="bubble sys">Ask about progress, what it is doing, or tell it to change course.
+            It can queue hints and steer intents.</div>`}
+      ${S.chatBusy ? '<div class="bubble sys">thinking…</div>' : ''}
+    </div>
+    <div class="cf">
+      <input id="chatText" placeholder="e.g. why are we stuck on 8080?"
+        onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();sendChat()}">
+      <button class="pri" onclick="sendChat()" ${S.chatBusy ? 'disabled' : ''}>Send</button>
+    </div></div>`;
+  const body = $('#chatBody');
+  if (body) body.scrollTop = body.scrollHeight;
+}
+
+async function sendChat() {
+  const el = $('#chatText');
+  const text = (el && el.value || '').trim();
+  if (!text || !S.task) return;
+  CHAT[S.task] = CHAT[S.task] || [];
+  CHAT[S.task].push({role: 'me', text});
+  S.chatBusy = true; renderChat();
+  const j = await api('/api/chat', {task: S.task, message: text});
+  S.chatBusy = false;
+  CHAT[S.task].push({role: 'you', text: j.error ? 'Error: ' + j.error : (j.reply || '(no reply)')});
+  renderChat();
+  if (!j.error) refresh(true);
+}
 
 function modal(opts) {
   return new Promise(resolve => {
@@ -504,19 +642,20 @@ async function refresh(force) {
       const f = (j.findings || [])[0];
       notify(nf === 1 ? 'New finding' : nf + ' new findings',
              f ? (f.vulnclass + ' — ' + f.summary) : '', 'finding',
-             () => { setTab('findings'); });
+             () => { setTab('findings'); }, 'finding:' + S.task + ':' + (f ? f.id : nf));
     }
     if (no > 0) {
       const f = (j.overview.recent_facts || [])[0];
       notify(no === 1 ? 'New observation' : no + ' new observations',
-             f ? f.summary : '', 'fact', () => { setTab('enumeration'); });
+             f ? f.summary : '', 'fact', () => { setTab('enumeration'); },
+             'fact:' + S.task + ':' + no);
     }
     const pend = ((j.scope || {}).pending || []).length;
     const prevPend = ((prev.scope || {}).pending || []).length;
     if (pend > prevPend) {
       const c = ((j.scope || {}).pending || [])[0];
       notify('Outside scope — approval needed', c ? c.host + ' was found by the run' : '',
-             'finding', () => { setTab('scope'); });
+             'scope', () => { setTab('scope'); }, 'scope:' + S.task + ':' + (c ? c.id : pend));
     }
   }
   const sig = [j.task.status, j.overview.round, j.overview.facts_total, j.overview.findings_total,
@@ -541,6 +680,10 @@ async function refresh(force) {
 function render() {
   if (S.view !== 'task' || !S.data) return;
   const d = S.data, ov = d.overview;
+  const sc = $('#main');
+  const keepMain = sc ? sc.scrollTop : 0;
+  const keepTree = ($('#artTree') || {}).scrollTop || 0;
+  const keepGraph = ($('#graphwrap') || {}).scrollLeft || 0;
   const dense = document.documentElement.getAttribute('data-density') === 'compact';
   const cov = ov.coverage;
   $('#main').innerHTML = `
@@ -602,8 +745,11 @@ function render() {
   if (S.tab === 'artifacts') { pane.innerHTML = tabArtifacts(d); loadArtifacts(); }
   if (S.tab === 'activity') pane.innerHTML = tabActivity(d);
   if (S.tab === 'graph') { pane.innerHTML = '<div class="skel" style="height:8rem"></div>'; loadGraph(); }
-  if (typingGuard()) { /* keep focus */ }
+  if (sc) sc.scrollTop = keepMain;
+  const tree = $('#artTree'); if (tree) tree.scrollTop = keepTree;
+  const gw = $('#graphwrap'); if (gw) gw.scrollLeft = keepGraph;
   renderLiveFromData();
+  renderBell();
 }
 
 function typingGuard() { return false; }
@@ -839,7 +985,8 @@ function tabScope(d, info) {
         <button class="pri" onclick="addScopeEntry()">Add</button>
       </div>
       <div class="hint" style="margin-top:.3rem">A domain entry allows its subdomains and any
-        address those names resolve to, so scans against the IP are not refused.</div>
+        address those names resolve to, so scans against the IP are not refused. Pasted commands
+        are reduced to their targets — a command is never stored as scope.</div>
     </div>
 
     <div class="card">
@@ -865,12 +1012,16 @@ function tabScope(d, info) {
         <input type="checkbox" style="width:auto" ${policy.auto_subdomains ? 'checked' : ''}
           onchange="setScopePolicy({auto_subdomains: this.checked})">
         <span>Subdomains of an approved domain <span class="hint">(recommended)</span></span></label>
-      <label class="row" style="gap:.4rem">
+      <label class="row" style="gap:.4rem;margin-bottom:.3rem">
         <input type="checkbox" style="width:auto" ${policy.auto_same_ip ? 'checked' : ''}
           onchange="setScopePolicy({auto_same_ip: this.checked})">
         <span>Hosts sharing an address with an approved target</span></label>
-      <div class="hint" style="margin-top:.3rem">Everything else waits for you. Auto-approvals are
-        tagged in the audit log.</div>
+      <label class="row" style="gap:.4rem">
+        <input type="checkbox" style="width:auto" ${policy.auto_any ? 'checked' : ''}
+          onchange="setScopePolicy({auto_any: this.checked})">
+        <span>Any host the run discovers <span class="hint">(hands-off; still logged)</span></span></label>
+      <div class="hint" style="margin-top:.3rem">Everything not covered waits for you here.
+        Auto-approvals are tagged in the audit log.</div>
 
       <hr>
       <h3 style="margin:0 0 .4rem;font-size:var(--fs-15)">Excluded</h3>
@@ -1328,6 +1479,7 @@ async function loadGraph() {
   S.graph = await api('/api/graph?task=' + S.task);
   if (S.tab !== 'graph') return;
   $('#pane').innerHTML = graphHtml(S.graph);
+  graphApply();
 }
 
 function graphHtml(g) {
@@ -1348,7 +1500,7 @@ function graphHtml(g) {
   }
   nodes.forEach(n => { if (level[n.id] === undefined) level[n.id] = 0; });
   const cols = {}; nodes.forEach(n => (cols[level[n.id]] = cols[level[n.id]] || []).push(n));
-  const W = 200, H = 34, GX = 60, GY = 14, PAD = 18;
+  const W = 290, H = 78, GX = 76, GY = 16, PAD = 20;
   const maxLevel = Math.max(0, ...Object.keys(cols).map(Number));
   const height = PAD * 2 + Math.max(...Object.values(cols).map(c => c.length), 1) * (H + GY);
   const width = PAD * 2 + (maxLevel + 1) * (W + GX);
@@ -1356,58 +1508,152 @@ function graphHtml(g) {
   Object.keys(cols).forEach(lv => cols[lv].forEach((n, i) => {
     pos[n.id] = {x: PAD + Number(lv) * (W + GX), y: PAD + i * (H + GY)};
   }));
+
   const css = getComputedStyle(document.documentElement);
   const v = (n, f) => (css.getPropertyValue(n) || f).trim();
   const surface = v('--surface', '#fff'), line = v('--line', '#ddd'), fg = v('--fg', '#222');
   const dim = v('--dim', '#777'), brand = v('--brand', '#7d2030');
-  const palette = {begin: line, goal: '#3f6b52', intent: brand, fact: '#4b6b8a',
-                   finding: '#8a2f3f', hint: '#8a6b2f', digest: line};
-  let svg = `<svg width="${width}" height="${height}" xmlns="http://www.w3.org/2000/svg"
-      font-family="-apple-system,Segoe UI,Roboto,sans-serif">`;
+  const ok = v('--ok', '#1c7a4d'), bad = v('--bad', '#b3261e'), warn = v('--warn', '#8a6a10');
   const active = !!(S.data && (S.data.running || S.data.approval));
+
+  const stateColour = n => {
+    if (n.kind === 'hint') return line;
+    if (n.state === 'running') return active ? brand : dim;
+    if (['done', 'met', 'achieved', 'confirmed'].includes(n.state)) return ok;
+    if (['exhausted', 'stale'].includes(n.state)) return warn;
+    if (['blocked', 'stopped', 'failed', 'abandoned'].includes(n.state)) return bad;
+    return line;
+  };
   const liveSet = new Set(nodes.filter(n => n.state === 'running' && active).map(n => n.id));
+
+  let svg = `<svg viewBox="0 0 ${width} ${height}" id="gsvg" preserveAspectRatio="xMinYMin meet"
+      style="width:100%;height:34rem;display:block;cursor:grab;touch-action:none"
+      onwheel="graphWheel(event)" onmousedown="graphDown(event)"
+      font-family="-apple-system,Segoe UI,Roboto,sans-serif">`;
   edges.forEach(e => {
     const a = pos[e.src], b = pos[e.dst]; if (!a || !b) return;
     const x1 = a.x + W, y1 = a.y + H / 2, x2 = b.x, y2 = b.y + H / 2, mx = (x1 + x2) / 2;
     const hot = liveSet.has(e.src) || liveSet.has(e.dst);
     svg += `<path class="${hot ? 'live-edge' : ''}" d="M${x1},${y1} C${mx},${y1} ${mx},${y2} ${x2},${y2}"
-      fill="none" stroke="${hot ? brand : line}" stroke-width="${hot ? 1.6 : 1.2}"/>`;
+      fill="none" stroke="${hot ? brand : line}" stroke-opacity="${hot ? 1 : .85}" stroke-width="${hot ? 1.9 : 1.4}"/>`;
   });
   nodes.forEach(n => {
-    const p = pos[n.id], tint = palette[n.kind] || line, sel = n.id === S.nodeSel;
-    const live = n.state === 'running' && active;
-    const stale = n.state === 'running' && !active;
-    svg += `<g style="cursor:pointer${live ? ';animation:nodepulse 1.7s ease-in-out infinite' : ''}"
-      class="${live ? 'live-node' : ''}" onclick="showNode(${n.id})">
-      <title>${esc(n.kind)} #${n.id}: ${esc(n.label || '')}</title>
-      <rect x="${p.x}" y="${p.y}" width="${W}" height="${H}" rx="6" fill="${surface}"
-        stroke="${sel ? brand : (live ? brand : tint)}" stroke-width="${sel ? 2.4 : (live ? 2 : 1.2)}"/>
-      <rect x="${p.x}" y="${p.y + 6}" width="3" height="${H - 12}" rx="2" fill="${tint}"/>
-      <text x="${p.x + 11}" y="${p.y + 14}" fill="${dim}" font-size="9">${esc(n.kind)} #${n.id}${
-        live ? ' · running' : stale ? ' · stale' : (n.state && ['done','exhausted','blocked','stopped'].includes(n.state) ? ' · ' + esc(n.state) : '')}</text>
-      <text x="${p.x + 11}" y="${p.y + 26}" fill="${fg}" font-size="10">${esc((n.label || '').slice(0, 32))}</text>
+    const p = pos[n.id];
+    const border = stateColour(n);
+    const sel = n.id === S.nodeSel;
+    const live = liveSet.has(n.id);
+    const label = (n.label || '').replace(/\s+/g, ' ').trim() || ('(' + n.kind + ')');
+    const lines = [];
+    let rest = label;
+    const max = 42;
+    while (rest && lines.length < 3) {
+      if (rest.length <= max) { lines.push(rest); rest = ''; break; }
+      let cut = rest.lastIndexOf(' ', max);
+      if (cut < max * 0.55) cut = max;
+      lines.push(rest.slice(0, cut).trim());
+      rest = rest.slice(cut).trim();
+    }
+    if (rest && lines.length) {
+      lines[lines.length - 1] = lines[lines.length - 1].replace(/\s*\S*$/, '') + '…';
+    }
+    const stateText = live ? 'running'
+      : (n.state === 'running' ? 'stale' : (n.state && n.state !== 'open' ? n.state : ''));
+    svg += `<g class="${live ? 'live-node' : ''}" style="cursor:pointer" onclick="showNode(${n.id})">
+      <title>${esc(n.kind)} #${n.id} · ${esc(n.state || '')} — ${esc(label)}</title>
+      <rect x="${p.x}" y="${p.y}" width="${W}" height="${H}" rx="7" fill="${surface}"
+        stroke="${sel ? brand : border}" stroke-width="${sel ? 2.6 : (live ? 2.2 : 1.3)}"/>
+      <rect x="${p.x}" y="${p.y}" width="4" height="${H}" rx="2" fill="${border}"/>
+      <text x="${p.x + 12}" y="${p.y + 15}" fill="${dim}" font-size="11">${esc(n.kind)} #${n.id}${
+        stateText ? ' · ' + esc(stateText) : ''}</text>
+      <text x="${p.x + 12}" y="${p.y + 36}" fill="${fg}" font-size="12.5">${esc(lines[0] || '')}</text>
+      <text x="${p.x + 12}" y="${p.y + 53}" fill="${fg}" font-size="12.5">${esc(lines[1] || '')}</text>
+      <text x="${p.x + 12}" y="${p.y + 70}" fill="${fg}" font-size="12.5">${esc(lines[2] || '')}</text>
+      ${live ? `<circle cx="${p.x + W - 12}" cy="${p.y + 12}" r="4" fill="${brand}">
+        <animate attributeName="opacity" values="1;0.2;1" dur="1.4s" repeatCount="indefinite"/></circle>` : ''}
       </g>`;
   });
   svg += '</svg>';
+
   return `<div class="filters">
       ${kinds.map(k => `<span class="chip ${S.graphKind === k ? 'on' : ''}"
         onclick="S.graphKind='${S.graphKind === k ? '' : k}'; setTab('graph')">${k}</span>`).join('')}
       <span class="hint">${nodes.length}/${allNodes.length} nodes · ${edges.length} edges${
         liveSet.size ? ` · <b style="color:var(--brand)">${liveSet.size} running</b>` : ''}${
-        (S.data && S.data.running) ? ' · live' : ''}</span>
-      <span style="flex:1"></span><button class="sm ghost" onclick="loadGraph()">Refresh</button></div>
+        active ? ' · live' : ''}</span>
+      <span style="flex:1"></span>
+      <button class="sm" onclick="graphZoom(-1)">−</button>
+      <button class="sm" onclick="graphZoom(1)">+</button>
+      <button class="sm" onclick="graphFit()">Fit</button>
+      <button class="sm ghost" onclick="loadGraph()">Refresh</button></div>
     <div class="hint" style="margin:-.2rem 0 .5rem">legend:
       <span class="chip" style="border-color:var(--brand)">running</span>
-      <span class="chip" style="border-color:var(--ok)">done</span>
+      <span class="chip" style="border-color:var(--ok)">done / met</span>
+      <span class="chip" style="border-color:var(--warn)">exhausted / stale</span>
       <span class="chip" style="border-color:var(--bad)">blocked / failed</span>
       <span class="chip">queued</span>
-      ${!active ? ' · nothing is running right now, so no node pulses' : ''}</div>
-    <div id="graphwrap" style="overflow:auto;border:1px solid var(--line);border-radius:10px;
-      background:var(--surface)">${svg}</div>
+      · drag to pan, scroll to zoom${active ? '' : ' · nothing is running right now'}</div>
+    <div id="graphwrap" style="overflow:hidden;border:1px solid var(--line);border-radius:10px;
+      background:var(--surface)" data-w="${width}" data-h="${height}">${svg}</div>
     <div id="nodedetail" style="margin-top:.6rem">${S.nodeSel ? '' : '<p class="hint">Select a node for its payload.</p>'}</div>`;
 }
 
+let GDRAG = null;
+function graphView() {
+  if (!S.graphView) S.graphView = {k: 1, x: 0, y: 0};
+  return S.graphView;
+}
+function graphApply() {
+  const svg = $('#gsvg'); if (!svg) return;
+  const wrap = $('#graphwrap');
+  const W = Number(wrap.dataset.w), H = Number(wrap.dataset.h);
+  const v = graphView();
+  svg.setAttribute('viewBox', `${v.x} ${v.y} ${W / v.k} ${H / v.k}`);
+}
+function graphZoom(dir) {
+  const v = graphView();
+  v.k = Math.max(0.3, Math.min(4, v.k * (dir > 0 ? 1.25 : 0.8)));
+  graphApply();
+}
+function graphFit() { S.graphView = {k: 1, x: 0, y: 0}; graphApply(); }
+function graphWheel(ev) {
+  ev.preventDefault();
+  const v = graphView();
+  const wrap = $('#graphwrap');
+  const W = Number(wrap.dataset.w), H = Number(wrap.dataset.h);
+  const rect = $('#gsvg').getBoundingClientRect();
+  const fx = (ev.clientX - rect.left) / rect.width, fy = (ev.clientY - rect.top) / rect.height;
+  const wx = v.x + fx * (W / v.k), wy = v.y + fy * (H / v.k);
+  v.k = Math.max(0.3, Math.min(6, v.k * (ev.deltaY < 0 ? 1.15 : 0.87)));
+  v.x = wx - fx * (W / v.k);
+  v.y = wy - fy * (H / v.k);
+  graphApply();
+}
+function graphDown(ev) {
+  const v = graphView();
+  GDRAG = {x: ev.clientX, y: ev.clientY, vx: v.x, vy: v.y};
+  const svg = $('#gsvg'); svg.style.cursor = 'grabbing';
+  const move = e => {
+    if (!GDRAG) return;
+    if (Math.abs(e.clientX - GDRAG.x) + Math.abs(e.clientY - GDRAG.y) > 4) window.__graphDragged = true;
+    const wrap = $('#graphwrap');
+    const W = Number(wrap.dataset.w);
+    const rect = svg.getBoundingClientRect();
+    const dvx = (e.clientX - GDRAG.x) * (W / v.k) / rect.width;
+    const dvy = (e.clientY - GDRAG.y) * (W / v.k) / rect.width;
+    v.x = GDRAG.vx - dvx; v.y = GDRAG.vy - dvy;
+    graphApply();
+  };
+  const up = () => {
+    GDRAG = null; svg.style.cursor = 'grab';
+    window.removeEventListener('mousemove', move);
+    window.removeEventListener('mouseup', up);
+  };
+  window.addEventListener('mousemove', move);
+  window.addEventListener('mouseup', up);
+}
+
 async function showNode(id) {
+  if (window.__graphDragged) { window.__graphDragged = false; return; }
   S.nodeSel = id;
   if (S.graph) $('#pane').innerHTML = graphHtml(S.graph);
   const j = await api('/api/node?id=' + id);

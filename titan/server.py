@@ -130,7 +130,7 @@ def serve(settings, task_id: int = 0) -> int:
                 return self._json({
                     "task": task,
                     "mode": (task["mode"] or "autonomous"),
-                    "workers": int(os.environ.get("TITAN_MAX_WORKERS", "2") or 2),
+                    "workers": engine.runtime(tid)["workers"],
                     "workdir": ov.get("workdir", ""),
                     "approval": store.pending_approval(tid),
                     "overview": ov,
@@ -455,6 +455,18 @@ def serve(settings, task_id: int = 0) -> int:
                 pol = store.set_scope_policy(tid, auto_subdomains=body.get("auto_subdomains"),
                                              auto_same_ip=body.get("auto_same_ip"))
                 return self._json({"policy": pol})
+
+            if path == "/api/chat":
+                tid = int(body.get("task") or 0)
+                message = str(body.get("message") or "").strip()
+                if not (store.get_task(tid) and message):
+                    return self._json({"error": "task and message required"}, 400)
+                store.log(tid, "operator", "chat", message[:500])
+                try:
+                    reply = engine.chat(tid, message)
+                except Exception as e:  # noqa: BLE001
+                    return self._json({"error": f"{type(e).__name__}: {e}"}, 500)
+                return self._json({"reply": reply})
 
             if path == "/api/hint":
                 tid = int(body.get("task") or 0)

@@ -18,6 +18,21 @@ import time
 from pathlib import Path
 from typing import Any, Iterable
 
+def kind_from_text(value: str) -> str:
+    v = (value or "").strip().lower()
+    if v.startswith(("http://", "https://")):
+        return "url"
+    if "/" in v:
+        return "cidr"
+    try:
+        import ipaddress
+
+        ipaddress.ip_address(v)
+        return "ip"
+    except ValueError:
+        return "domain"
+
+
 def _looks_ip(value: str) -> bool:
     import ipaddress
 
@@ -324,7 +339,8 @@ class Store:
         with self.lock:
             self.db.executescript(SCHEMA)
             for stmt in ("ALTER TABLE explorations ADD COLUMN workdir TEXT",
-                         "ALTER TABLE explorations ADD COLUMN mode TEXT"):
+                         "ALTER TABLE explorations ADD COLUMN mode TEXT",
+                         "ALTER TABLE scope_policy ADD COLUMN auto_any INTEGER NOT NULL DEFAULT 0"):
                 try:
                     self.db.execute(stmt)
                 except sqlite3.OperationalError:
@@ -494,14 +510,74 @@ class Store:
             self.db.commit()
             return int(cur.rowcount or 0)
 
+    @staticmethod
+    def scope_targets(text: str) -> list[tuple[str, str]]:
+        """Pull real targets out of whatever the operator or the planner pasted.
+
+        "nmap -p- --min-rate 1 192.168.168.98 -oN out.txt" is a command, not a
+        scope entry; store the address, not the command.
+        """
+        import ipaddress
+        import re
+        from urllib.parse import urlparse
+
+        raw = (text or "").strip()
+        if not raw:
+            return []
+        found: list[tuple[str, str]] = []
+        seen = set()
+
+        def push(kind: str, value: str) -> None:
+            value = value.strip().strip("'\"").rstrip(",;")
+            if not value or (kind, value) in seen:
+                return
+            seen.add((kind, value))
+            found.append((kind, value))
+
+        for m in re.finditer(r"https?://[^\s'\"<>]+", raw):
+            u = urlparse(m.group(0))
+            host = (u.hostname or "").strip()
+            if host:
+                push("url", m.group(0).split("?")[0])
+        for m in re.finditer(r"\b(?:\d{1,3}\.){3}\d{1,3}(?:/\d{1,2})?\b", raw):
+            tok = m.group(0)
+            try:
+                net = ipaddress.ip_network(tok, strict=False)
+            except ValueError:
+                continue
+            push("cidr" if "/" in tok else "ip", str(net) if "/" in tok else str(net.network_address))
+        url_hosts = set()
+        for k, v in found:
+            if k == "url":
+                url_hosts.add(v.split("://", 1)[-1].split(":")[0].split("/")[0].lower())
+        for m in re.finditer(r"\b(?:[a-zA-Z0-9](?:[a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,24}\b", raw):
+            tok = m.group(0).lower()
+            if tok.rsplit(".", 1)[-1] in ("txt", "log", "json", "md", "xml", "gnmap", "nmap"):
+                continue
+            if tok in url_hosts:
+                continue                      # already covered by the url entry
+            push("domain", tok)
+        if not found:
+            # a single bare token is taken at face value, kind and all
+            kind2, value2 = Store.normalise_scope(kind_from_text(raw), raw)
+            if value2:
+                found.append((kind2, value2))
+        return found
+
     def add_scope(self, task_id: int, kind: str, value: str, reason: str = "") -> None:
-        kind, value = self.normalise_scope(kind, value)
-        if not (task_id and kind and value):
+        targets = self.scope_targets(value)
+        if kind == "exclude":
+            targets = [("exclude", value.strip().split()[0].lower())] if value.strip() else []
+        elif not targets:
+            nk, nv = self.normalise_scope(kind, value)
+            targets = [(nk, nv)] if nv else []
+        if not (task_id and targets):
             return
         with self.lock:
-            self.db.execute(
-                "INSERT OR IGNORE INTO task_scope(task_id,kind,value,reason,created_at) VALUES(?,?,?,?,?)",
-                (task_id, kind, value.strip().lower(), reason, now()))
+            for k, v in targets:
+                self.db.execute(
+                    "INSERT OR IGNORE INTO task_scope(task_id,kind,value,reason,created_at)"
+                    " VALUES(?,?,?,?,?)", (task_id, k, v.strip().lower(), reason, now()))
             self.db.commit()
 
     def scope(self, task_id: int) -> list[dict]:
@@ -524,21 +600,23 @@ class Store:
     def scope_policy(self, task_id: int) -> dict:
         r = self.one("SELECT * FROM scope_policy WHERE task_id=?", (task_id,))
         if not r:
-            return {"auto_subdomains": 1, "auto_same_ip": 0}
-        return {"auto_subdomains": int(r["auto_subdomains"]), "auto_same_ip": int(r["auto_same_ip"])}
+            return {"auto_subdomains": 1, "auto_same_ip": 0, "auto_any": 0}
+        return {"auto_subdomains": int(r["auto_subdomains"]),
+                "auto_same_ip": int(r["auto_same_ip"]),
+                "auto_any": int(r["auto_any"] if "auto_any" in r.keys() else 0)}
 
     def set_scope_policy(self, task_id: int, **kw) -> dict:
         cur = self.scope_policy(task_id)
-        for k in ("auto_subdomains", "auto_same_ip"):
+        for k in ("auto_subdomains", "auto_same_ip", "auto_any"):
             if k in kw and kw[k] is not None:
                 cur[k] = 1 if kw[k] else 0
         with self.lock:
             self.db.execute(
-                "INSERT INTO scope_policy(task_id,auto_subdomains,auto_same_ip,updated_at)"
-                " VALUES(?,?,?,?) ON CONFLICT(task_id) DO UPDATE SET"
+                "INSERT INTO scope_policy(task_id,auto_subdomains,auto_same_ip,auto_any,updated_at)"
+                " VALUES(?,?,?,?,?) ON CONFLICT(task_id) DO UPDATE SET"
                 " auto_subdomains=excluded.auto_subdomains, auto_same_ip=excluded.auto_same_ip,"
-                " updated_at=excluded.updated_at",
-                (task_id, cur["auto_subdomains"], cur["auto_same_ip"], now()))
+                " auto_any=excluded.auto_any, updated_at=excluded.updated_at",
+                (task_id, cur["auto_subdomains"], cur["auto_same_ip"], cur["auto_any"], now()))
             self.db.commit()
         return cur
 

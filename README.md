@@ -335,6 +335,17 @@ Every round rewrites the engagement folder, so the output exists without the con
   report/report.md
 ```
 
+Notifications live behind the bell in the header: findings, observations and scope
+requests are kept in a list with new/viewed state, so a reload does not replay what
+you already read. The ✦ button opens a chat with the planner — ask what it is doing,
+why a step failed, or tell it to change course; it has the same tools as the CLI's
+`titan ask`, so it can queue hints and steer running intents.
+
+Scope accepts pasted commands: `nmap -p- 10.0.0.5 -oN out.txt` is reduced to
+`ip=10.0.0.5`, never stored as a string. Auto-approval has three levels —
+subdomains of an approved domain (default), hosts sharing an approved address, and
+any host at all — so a hands-off run can proceed without a click.
+
 A density toggle (compact / comfortable) is in the header menu and is remembered per
 browser. Keyboard: `g` then `o/f/e/v/a/r` for the tabs, `/` to focus the filter,
 `?` for the list, `esc` to close.

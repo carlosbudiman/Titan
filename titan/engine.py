@@ -392,6 +392,13 @@ class Engine:
         return int(r["c"]) if r else 0
 
     # ------------------------------------------------------------------ approval gate
+    def runtime(self, task_id: int) -> dict:
+        """Effective live settings for a task (overrides first, env default last)."""
+        return {"workers": int(self.workers_override.get(task_id, self.settings.max_workers)),
+                "mode": self.mode_override.get(task_id)
+                        or (self.store.get_task(task_id)["mode"] if self.store.get_task(task_id) else None)
+                        or "autonomous"}
+
     def set_runtime(self, task_id: int, workers: int | None = None,
                     mode: str | None = None) -> dict:
         """Change workers/mode for a run that is already going (or for the next one)."""
@@ -466,6 +473,7 @@ class Engine:
             self.store.set_task_mode(task_id, "approval")
         hard_cap = rounds or self.settings.max_rounds
         workers = max(1, workers or self.settings.max_workers)
+        self.workers_override[task_id] = workers      # the console reflects this immediately
         deadline = (time.time() + self.settings.task_deadline_s) if self.settings.task_deadline_s else 0
         self.clear_stop(task_id)
         self.store.reclaim_running(task_id)   # anything 'running' is from a dead process

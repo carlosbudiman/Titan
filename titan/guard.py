@@ -369,8 +369,13 @@ class Guard:
                 policy = self.store.scope_policy(self.task_id)
                 # a subdomain of an approved domain is in scope by many engagement
                 # rules; approve it automatically when the operator allows that
-                if host and policy.get("auto_subdomains") and self.scope.is_subdomain(host):
-                    self.store.add_scope(self.task_id, "domain", host, "auto:subdomain")
+                auto_ok = bool(host) and (
+                    bool(policy.get("auto_any"))
+                    or (policy.get("auto_subdomains") and self.scope.is_subdomain(host))
+                )
+                if auto_ok:
+                    self.store.add_scope(self.task_id, "domain", host,
+                                         "auto:" + ("policy" if policy.get("auto_any") else "subdomain"))
                     self.scope = Scope(self.store.scope(self.task_id))
                     self._built = time.time()
                     ok, why, host = self.scope.check_text(cmd)
