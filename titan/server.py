@@ -116,6 +116,18 @@ def serve(settings, task_id: int = 0) -> int:
             if path == "/":
                 return self._html(GUI)
 
+            if path == "/static/daisyui.css":
+                body, enc = _daisy()
+                self.send_response(200)
+                self.send_header("Content-Type", "text/css; charset=utf-8")
+                if enc:
+                    self.send_header("Content-Encoding", "gzip")
+                self.send_header("Cache-Control", "public, max-age=86400")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+                return
+
             if path == "/api/tasks":
                 return self._json({"tasks": [dict(r) for r in store.list_tasks(50)]})
 
@@ -552,6 +564,21 @@ def serve(settings, task_id: int = 0) -> int:
         srv.server_close()
     return 0
 
+
+
+_DAISY_CACHE: dict = {}
+
+
+def _daisy() -> tuple[bytes, bool]:
+    """daisyUI's component CSS, gzipped once and served from memory."""
+    if not _DAISY_CACHE:
+        import gzip
+
+        raw = Path(__file__).with_name("assets") / "daisyui.css"
+        data = raw.read_bytes() if raw.is_file() else b"/* daisyui not vendored */"
+        _DAISY_CACHE["body"] = gzip.compress(data, 9)
+        _DAISY_CACHE["enc"] = raw.is_file()
+    return _DAISY_CACHE["body"], _DAISY_CACHE["enc"]
 
 
 def _mime(path) -> str:

@@ -5,6 +5,7 @@ GUI = r"""<!doctype html>
 <title>Dewaguard Titan</title>
 <link rel="icon" type="image/png" href="data:image/png;base64,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">
 <meta name="viewport" content="width=device-width,initial-scale=1">
+<link rel="stylesheet" href="/static/daisyui.css">
 <script>
   (function () {
     var t = localStorage.getItem('titan-theme');
@@ -15,6 +16,24 @@ GUI = r"""<!doctype html>
   })();
 </script>
 <style>
+/* daisyUI tokens, driven by the Titan palette (oklch) */
+[data-theme="light"]{
+  --p:39.87% 0.1267 15.41; --pc:98% 0.01 15;
+  --b1:100% 0 0; --b2:97.14% 0.0025 48.72; --b3:92.93% 0.0067 28.83; --bc:22.82% 0.0131 1.45;
+  --n:43.13% 0.0234 6.18; --nc:97% 0.005 20;
+  --su:51.48% 0.1113 157.16; --suc:100% 0 0; --wa:54.17% 0.1058 86.51; --wac:100% 0 0;
+  --er:50.13% 0.1783 28.7; --erc:100% 0 0;
+  --rounded-btn:.5rem; --rounded-box:.75rem; --btn-text-case:none; --tab-radius:.5rem;
+}
+[data-theme="dark"]{
+  --p:57.16% 0.1516 14.1; --pc:0% 0 0;
+  --b1:20.26% 0.0089 351.83; --b2:22.57% 0.0101 355.85; --b3:28.2% 0.0169 5.97;
+  --bc:93.67% 0.0077 7.29;
+  --n:33% 0.01 350; --nc:93% 0.005 7;
+  --su:72.34% 0.1279 160.23; --suc:20% 0 0; --wa:77.51% 0.1278 86.92; --wac:20% 0 0;
+  --er:68.56% 0.1658 25.41; --erc:20% 0 0;
+  --rounded-btn:.5rem; --rounded-box:.75rem; --btn-text-case:none; --tab-radius:.5rem;
+}
 :root{
   --fs-11:11px; --fs-12:12px; --fs-13:13px; --fs-15:15px; --fs-20:20px;
   --r:8px; --sev-critical:#7f1d1d; --sev-high:#a5342f; --sev-medium:#9a7412;
@@ -58,13 +77,13 @@ header .spacer{flex:1}
 .iconbtn{border:1px solid transparent;background:none;color:var(--dim);border-radius:var(--r);
   width:30px;height:30px;display:grid;place-items:center;cursor:pointer;font-size:14px}
 .iconbtn:hover{color:var(--fg);background:var(--surface-2)}
-.menu{position:absolute;right:1rem;top:3rem;background:var(--surface);border:1px solid var(--line);
+.popmenu{position:absolute;right:1rem;top:3rem;background:var(--surface);border:1px solid var(--line);
   border-radius:10px;padding:.35rem;z-index:70;min-width:13rem;box-shadow:0 8px 24px rgba(0,0,0,.12)}
-.menu button{display:block;width:100%;text-align:left;border:0;background:none;padding:.4rem .6rem;
+.popmenu button{display:block;width:100%;text-align:left;border:0;background:none;padding:.4rem .6rem;
   border-radius:6px;color:var(--fg);font:inherit;font-size:var(--fs-13);cursor:pointer}
-.menu button:hover{background:var(--surface-2)}
-.menu .sep{height:1px;background:var(--line);margin:.3rem .2rem}
-.menu .muted{padding:.2rem .6rem}
+.menu button:not(.btn):hover{background:var(--surface-2)}
+.popmenu .sep{height:1px;background:var(--line);margin:.3rem .2rem}
+.popmenu .muted{padding:.2rem .6rem}
 
 main{display:grid;grid-template-columns:246px 1fr;min-height:calc(100vh - 44px)}
 aside{background:var(--surface);border-right:1px solid var(--line);padding:.7rem;overflow:auto}
@@ -84,17 +103,17 @@ aside .task .kill:hover{color:var(--bad)}
 section{padding:1.1rem 1.3rem;overflow:auto}
 
 /* ---------- primitives ---------- */
-button{background:var(--surface);color:var(--fg);border:1px solid var(--line);border-radius:var(--r);
+button:not(.btn){background:var(--surface);color:var(--fg);border:1px solid var(--line);border-radius:var(--r);
   padding:.34rem .7rem;cursor:pointer;font:inherit;font-size:var(--fs-13)}
 button:hover{background:var(--surface-2)}
-button.pri{background:var(--brand);border-color:var(--brand);color:var(--on-brand);font-weight:500}
-button.pri:hover{background:var(--brand-2)}
-button.ghost{background:none;border-color:transparent;color:var(--dim)}
-button.ghost:hover{color:var(--fg);background:var(--surface-2)}
-button.danger{color:var(--bad)}
-button:disabled{opacity:.45;cursor:not-allowed}
-button.sm{padding:.15rem .45rem;font-size:var(--fs-12)}
-input,textarea,select{background:var(--surface);color:var(--fg);border:1px solid var(--line);
+button.pri:not(.btn){background:var(--brand);border-color:var(--brand);color:var(--on-brand);font-weight:500}
+button.pri:not(.btn):hover{background:var(--brand-2)}
+button.ghost:not(.btn){background:none;border-color:transparent;color:var(--dim)}
+button.ghost:not(.btn):hover{color:var(--fg);background:var(--surface-2)}
+button.danger:not(.btn){color:var(--bad)}
+button:not(.btn):disabled{opacity:.45;cursor:not-allowed}
+button.sm:not(.btn){padding:.15rem .45rem;font-size:var(--fs-12)}
+input:not(.input):not(.textarea):not(.select),textarea:not(.textarea),select:not(.select){background:var(--surface);color:var(--fg);border:1px solid var(--line);
   border-radius:var(--r);padding:.34rem .55rem;font:inherit;font-size:var(--fs-13);width:100%}
 input:focus,textarea:focus,select:focus,button:focus-visible{outline:2px solid var(--brand);
   outline-offset:-1px}
@@ -191,24 +210,24 @@ label.f>span{display:block;color:var(--dim);font-size:var(--fs-12);margin-bottom
 
 /* ---------- toasts / modal ---------- */
 #toasts{position:fixed;right:.8rem;top:3.3rem;display:flex;flex-direction:column;gap:.4rem;
-  z-index:60;width:19rem;max-width:calc(100vw - 2rem)}
-.toast{position:relative;background:var(--surface);border:1px solid var(--line);
+  z-index:60;width:19rem;max-width:calc(100vw - 1.6rem);min-width:0}
+.ntoast{position:relative;overflow:hidden;min-width:0;background:var(--surface);border:1px solid var(--line);
   border-left:3px solid var(--brand);border-radius:var(--r);padding:.5rem 1.4rem .5rem .65rem;
   font-size:var(--fs-12);animation:slide .16s ease-out}
-.toast.click{cursor:pointer}
-.toast.click:hover{background:var(--surface-2)}
-.toast .tt{font-weight:600;display:block;line-height:1.35}
-.toast .tb{color:var(--dim);display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;
+.ntoast.click{cursor:pointer}
+.ntoast.click:hover{background:var(--surface-2)}
+.ntoast .tt{font-weight:600;display:block;line-height:1.35;overflow-wrap:anywhere}
+.ntoast .tb{color:var(--dim);display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;
   overflow:hidden;overflow-wrap:anywhere}
-.toast .tx{position:absolute;right:.25rem;top:.2rem;border:0;background:none;color:var(--dim);
+.ntoast .tx{position:absolute;right:.25rem;top:.2rem;border:0;background:none;color:var(--dim);
   cursor:pointer;font-size:13px;line-height:1;padding:.2rem}
-.toast .tx:hover{color:var(--fg)}
-.toast.err{border-left-color:var(--bad)} .toast.ok{border-left-color:var(--ok)}
-.toast.finding{border-left-color:var(--sev-critical)} .toast.fact{border-left-color:var(--brand)}
+.ntoast .tx:hover{color:var(--fg)}
+.ntoast.err{border-left-color:var(--bad)} .ntoast.ok{border-left-color:var(--ok)}
+.ntoast.finding{border-left-color:var(--sev-critical)} .ntoast.fact{border-left-color:var(--brand)}
 @keyframes slide{from{opacity:0;transform:translateY(-4px)}to{opacity:1;transform:none}}
 .overlay{position:fixed;inset:0;background:rgba(18,10,12,.42);display:grid;place-items:center;
   z-index:80;padding:1rem}
-.modal{width:min(34rem,100%);animation:pop .14s ease-out}
+.dlg{width:min(34rem,100%);animation:pop .14s ease-out}
 @keyframes pop{from{opacity:0;transform:scale(.985)}to{opacity:1;transform:none}}
 kbd{font-family:inherit;border:1px solid var(--line);border-bottom-width:2px;border-radius:4px;
   padding:0 .3rem;font-size:var(--fs-11);background:var(--surface-2)}
@@ -233,7 +252,27 @@ kbd{font-family:inherit;border:1px solid var(--line);border-bottom-width:2px;bor
 .nitem.unread:before{content:'';position:absolute;left:.28rem;top:.75rem;width:5px;height:5px;
   border-radius:50%;background:var(--brand)}
 /* chat: overview card + dock */
-.chatmini{flex:1;min-height:10rem;max-height:20rem;overflow:auto;display:flex;flex-direction:column;
+.chat-empty{padding:1.1rem .4rem;text-align:center}
+.chat-empty-t{font-weight:600;font-size:var(--fs-13)}
+.chat-empty-s{color:var(--dim);font-size:var(--fs-12);margin:.15rem auto .6rem;max-width:26rem}
+.chat-suggests{display:flex;gap:.35rem;flex-wrap:wrap;justify-content:center}
+.chat .chat-bubble{max-width:85%;font-size:var(--fs-12);white-space:pre-wrap;overflow-wrap:anywhere}
+.chat .chat-header{font-size:var(--fs-11);color:var(--dim);margin-bottom:.15rem}
+.chat .chat-footer{margin-top:.2rem}
+.chatmini .chat{margin-bottom:.15rem}
+.qwrap{border-top:1px solid var(--line)}
+.qwrap>summary{cursor:pointer;padding:.65rem .9rem .6rem;font-size:var(--fs-12);color:var(--dim);
+  display:flex;gap:.4rem;align-items:center;list-style:none}
+.qwrap>summary::-webkit-details-marker{display:none}
+.qwrap>summary:hover{background:var(--surface-2)}
+.qlist{padding:.1rem .9rem .6rem;max-height:12rem;overflow:auto}
+.ctabs{display:flex;align-items:center;gap:.3rem;padding:.35rem .5rem;
+  border-bottom:1px solid var(--line)}
+.ctabs .tabs{flex-wrap:nowrap;overflow:auto;justify-content:flex-start}
+.ctabs .tab{white-space:nowrap;gap:.25rem}
+.tabx{opacity:.45;margin-left:.15rem}
+.tabx:hover{opacity:1;color:var(--bad)}
+.chatmini{flex:1;min-height:13rem;max-height:22rem;overflow:auto;display:flex;flex-direction:column;
   gap:.35rem;padding-right:.2rem}
 .chatmini .bubble{font-size:var(--fs-12)}
 .cactions{display:flex;gap:.3rem;flex-wrap:wrap;margin:-.15rem 0 .35rem}
@@ -247,18 +286,18 @@ kbd{font-family:inherit;border:1px solid var(--line);border-bottom-width:2px;bor
 .cdot{display:inline-block;width:5px;height:5px;border-radius:50%;background:var(--brand);
   margin-left:.25rem;vertical-align:middle}
 /* chat dock */
-.chat{position:fixed;right:.9rem;bottom:.9rem;width:26rem;max-width:calc(100vw - 1.6rem);
+.chatdock{position:fixed;right:.9rem;bottom:.9rem;width:26rem;max-width:calc(100vw - 1.6rem);
   height:30rem;background:var(--surface);border:1px solid var(--line);border-radius:12px;
   z-index:75;display:flex;flex-direction:column;box-shadow:0 16px 40px rgba(0,0,0,.18)}
-.chat .ch{padding:.5rem .7rem;border-bottom:1px solid var(--line);display:flex;
+.chatdock .ch{padding:.5rem .7rem;border-bottom:1px solid var(--line);display:flex;
   justify-content:space-between;align-items:center;font-weight:600;font-size:var(--fs-12)}
-.chat .body{flex:1;overflow:auto;padding:.6rem .7rem;display:flex;flex-direction:column;gap:.5rem}
+.chatdock .body{flex:1;overflow:auto;padding:.6rem .7rem;display:flex;flex-direction:column;gap:.5rem}
 .bubble{max-width:88%;padding:.45rem .6rem;border-radius:10px;font-size:var(--fs-12);
   white-space:pre-wrap;overflow-wrap:anywhere}
 .bubble.me{align-self:flex-end;background:var(--brand);color:var(--on-brand)}
 .bubble.you{align-self:flex-start;background:var(--surface-2);border:1px solid var(--line)}
 .bubble.sys{align-self:center;color:var(--dim);font-size:var(--fs-11)}
-.chat .cf{border-top:1px solid var(--line);padding:.5rem;display:flex;gap:.4rem}
+.chatdock .cf{border-top:1px solid var(--line);padding:.5rem;display:flex;gap:.4rem}
 
 /* artifacts tree */
 .tnode{padding:.2rem .35rem;border-radius:5px;font-size:var(--fs-12);cursor:pointer;
@@ -291,15 +330,15 @@ pre.code{max-height:32rem}
   <div class="crumbs" id="crumbs"></div>
   <span class="live" id="live"></span>
   <span class="spacer"></span>
-  <button class="iconbtn" id="bell" title="Notifications" onclick="toggleNotifs()">◔
+  <button class="btn btn-ghost btn-sm btn-circle" id="bell" title="Notifications" onclick="toggleNotifs()">◔
     <span id="bellBadge" style="display:none"></span></button>
-  <button class="iconbtn" id="chatbtn" title="Ask the planner" onclick="toggleChat()">✦</button>
-  <button class="iconbtn" id="theme" title="Light / dark" onclick="toggleTheme()">◐</button>
-  <button class="iconbtn" id="gear" title="Menu" onclick="toggleMenu()">⋯</button>
+  <button class="btn btn-ghost btn-sm btn-circle" id="chatbtn" title="Ask the planner" onclick="toggleChat()">✦</button>
+  <button class="btn btn-ghost btn-sm btn-circle" id="theme" title="Light / dark" onclick="toggleTheme()">◐</button>
+  <button class="btn btn-ghost btn-sm btn-circle" id="gear" title="Menu" onclick="toggleMenu()">⋯</button>
 </header>
 <main>
   <aside>
-    <div class="head"><span>Engagements</span><button class="pri sm" onclick="showNew()">New</button></div>
+    <div class="head"><span>Engagements</span><button class="btn btn-primary btn-xs" onclick="showNew()">New</button></div>
     <div id="tasks"></div>
   </aside>
   <section id="main"><div class="empty"><b>No engagement selected</b>Create one, or pick one from the list.</div></section>
@@ -318,7 +357,7 @@ let S = {tasks: [], task: 0, data: null, tab: 'overview', view: 'task',
          graph: null, nodeSel: 0, models: [], lastSig: '', findSev: '', findStatus: '',
          findQ: '', actWorker: '', actKind: '', graphKind: '', expanded: {},
          lastResult: {}, scopeInfo: null, commands: null, artifacts: null, artPath: '', artText: '',
-         artMode: 'files'};
+         artMode: 'files', dockOpen: false};
 let SEEN = null;
 const TABS = [['overview','Overview'],['scope','Scope'],['commands','Commands'],
               ['enumeration','Enumeration'],['findings','Findings'],['artifacts','Artifacts'],
@@ -345,7 +384,7 @@ function notify(title, body, kind, onClick, key, taskId) {
 function transientToast(title, body, kind, onClick) {
   const box = $('#toasts');
   const el = document.createElement('div');
-  el.className = 'toast ' + (kind || '') + (onClick ? ' click' : '');
+  el.className = 'ntoast ' + (kind || '') + (onClick ? ' click' : '');
   el.innerHTML = `<span class="tt">${esc(title)}</span>${body ? `<span class="tb">${esc(body)}</span>` : ''}` +
     '<button class="tx" aria-label="Dismiss">×</button>';
   el.querySelector('.tx').onclick = ev => { ev.stopPropagation(); el.remove(); };
@@ -418,25 +457,52 @@ function pushMsg(taskId, role, text) {
   if (th.msgs.length > 80) th.msgs = th.msgs.slice(-80);
 }
 
+function fmtClock(ts) {
+  try { return new Date(ts).toLocaleTimeString([], {hour: '2-digit', minute: '2-digit'}); }
+  catch (e) { return ''; }
+}
+
 function chatBubbles(taskId) {
   const th = thread(taskId);
   if (!th.msgs.length) {
-    return `<div class="bubble sys">Ask about progress or say what to do next.
-      It can queue intents, hint the planner and steer a running worker.</div>`;
+    return `<div class="chat-empty">
+      <div class="chat-empty-t">Ask the planner anything</div>
+      <div class="chat-empty-s">It reads the live graph, so it can answer with what the run
+        actually has — and change it.</div>
+      <div class="chat-suggests">
+        <button class="btn btn-xs btn-outline" onclick="suggest(${taskId}, 'What is the run doing right now?')">What is it doing?</button>
+        <button class="btn btn-xs btn-outline" onclick="suggest(${taskId}, 'What is blocking progress, and what would you try next?')">What is blocking?</button>
+        <button class="btn btn-xs btn-outline" onclick="suggest(${taskId}, 'Summarise what has been proven so far, and what is still a guess.')">Summarise findings</button>
+      </div></div>`;
   }
   return th.msgs.map((m, i) => {
     if (m.role === 'me') {
-      return `<div class="bubble me">${esc(m.text)}</div>
-        <div class="cactions"><button class="sm ghost" title="Send this instruction to the planner"
-          onclick="hintFrom(${taskId}, ${i})">Send as hint</button></div>`;
+      return `<div class="chat chat-end">
+        <div class="chat-header">You <time class="opacity-50">${fmtClock(m.ts)}</time></div>
+        <div class="chat-bubble chat-bubble-primary">${esc(m.text)}</div>
+        <div class="chat-footer">
+          <button class="btn btn-ghost btn-xs" onclick="hintFrom(${taskId}, ${i})">Send as hint</button>
+        </div></div>`;
     }
     const ids = [...new Set((m.text.match(/#(\d+)/g) || []).map(x => x.slice(1)))].slice(0, 3);
-    return `<div class="bubble you">${esc(m.text)}</div>
-      <div class="cactions">
-        <button class="sm ghost" onclick="hintFrom(${taskId}, ${i})">Queue as hint</button>
-        ${ids.map(id => `<button class="sm" onclick="steer(${id})">Steer #${id}</button>`).join('')}
-      </div>`;
+    return `<div class="chat chat-start">
+      <div class="chat-image avatar placeholder">
+        <div class="w-6 rounded-full bg-primary text-primary-content"><span class="text-xs">P</span></div>
+      </div>
+      <div class="chat-header">Planner <time class="opacity-50">${fmtClock(m.ts)}</time></div>
+      <div class="chat-bubble">${esc(m.text)}</div>
+      <div class="chat-footer" style="gap:.25rem;flex-wrap:wrap">
+        <button class="btn btn-ghost btn-xs" onclick="hintFrom(${taskId}, ${i})">Queue as hint</button>
+        ${ids.map(id => `<button class="btn btn-xs btn-outline" onclick="steer(${id})">Steer #${id}</button>`).join('')}
+      </div></div>`;
   }).join('');
+}
+
+function suggest(taskId, text) {
+  const th = thread(taskId);
+  th.draft = text;
+  if (taskId === S.task && $('#ovChatText')) { $('#ovChatText').value = text; sendChat('ov'); }
+  else { S.chatTask = taskId; renderChat(); setTimeout(() => { const el = $('#chatText'); if (el) { el.value = text; sendChat('dock'); } }, 40); }
 }
 
 async function hintFrom(taskId, idx) {
@@ -452,22 +518,66 @@ async function hintFrom(taskId, idx) {
 
 function toggleChat() {
   const host = $('#chatHost');
-  if (host.innerHTML) { host.innerHTML = ''; return; }
+  if (host.innerHTML) {
+    host.innerHTML = ''; S.dockOpen = false;
+    if (S.view === 'task') render(); else renderChatCard();
+    return;
+  }
+  S.dockOpen = true;
   S.chatTask = S.chatTask || S.task;
   renderChat();
+  if (S.view === 'task') render();
   setTimeout(() => { const el = $('#chatText'); if (el) el.focus(); }, 50);
 }
 
 function chatTabs() {
   const ids = [...new Set([...Object.keys(CHAT).map(Number), S.task, S.chatTask].filter(Boolean))]
     .sort((a, b) => a - b);
-  return `<div class="ctabs">${ids.map(id => {
-    const th = thread(id);
-    const t = (S.tasks || []).find(x => x.id === id) || {};
-    const unread = th.msgs.filter(m => m.ts > th.seen).length && id !== S.chatTask;
-    return `<button class="ctab ${id === S.chatTask ? 'on' : ''}" onclick="switchChat(${id})"
-      title="${esc(t.title || t.goal || '')}">#${id}${unread ? '<i class="cdot"></i>' : ''}</button>`;
-  }).join('')}</div>`;
+  return `<div class="ctabs">
+    <div class="tabs tabs-boxed tabs-xs" style="flex:1">
+      ${ids.map(id => {
+        const th = thread(id);
+        const t = (S.tasks || []).find(x => x.id === id) || {};
+        const unread = th.msgs.filter(m => m.ts > th.seen).length && id !== S.chatTask;
+        return `<button class="tab ${id === S.chatTask ? 'tab-active' : ''}"
+          onclick="switchChat(${id})" title="${esc(t.title || t.goal || '')}">
+          #${id}${unread ? '<i class="cdot"></i>' : ''}
+          <span class="tabx" onclick="event.stopPropagation(); closeChatTab(${id})" title="Close">×</span>
+        </button>`;
+      }).join('')}
+    </div>
+    <div style="position:relative">
+      <button class="btn btn-ghost btn-xs" onclick="addChatTab()" title="Open another engagement">＋</button>
+      <div id="chatAddMenu"></div>
+    </div></div>`;
+}
+
+function addChatTab() {
+  const host = $('#chatAddMenu');
+  if (!host) return;
+  if (host.innerHTML) { host.innerHTML = ''; return; }
+  const open = new Set(Object.keys(CHAT).map(Number));
+  const rest = (S.tasks || []).filter(t => !open.has(t.id));
+  host.innerHTML = `<div class="menu menu-sm dropdown-content bg-base-100 rounded-box border border-base-300"
+      style="position:absolute;right:0;top:1.4rem;z-index:90;width:15rem;padding:.3rem">
+    ${rest.length ? rest.map(t => `<li><a onclick="openChatTab(${t.id})">
+      <b>#${t.id}</b> <span class="truncate">${esc(t.title || t.goal || '')}</span></a></li>`).join('')
+      : '<li><a class="disabled">every engagement is open</a></li>'}
+  </div>`;
+}
+
+function openChatTab(id) {
+  thread(id);
+  S.chatTask = id;
+  const host = $('#chatAddMenu'); if (host) host.innerHTML = '';
+  renderChat();
+}
+
+function closeChatTab(id) {
+  delete CHAT[id];
+  if (S.chatTask === id) S.chatTask = S.task;
+  renderChat();
+  renderChatCard();
 }
 
 function switchChat(id) { S.chatTask = id; thread(id).seen = Date.now(); renderChat(); }
@@ -477,16 +587,20 @@ function renderChat() {
   if (!host) return;
   const id = S.chatTask || S.task;
   const th = thread(id);
-  host.innerHTML = `<div class="chat">
+  host.innerHTML = `<div class="chatdock">
     <div class="ch"><span>Planner · <b>#${id}</b></span>
       <button class="iconbtn" onclick="toggleChat()">×</button></div>
     ${chatTabs()}
     <div class="body" id="chatBody">${chatBubbles(id)}
-      ${th.busy ? '<div class="bubble sys">thinking…</div>' : ''}</div>
+      ${th.busy ? '<div class="chat chat-start"><div class="chat-bubble"><span class="loading loading-dots loading-sm"></span></div></div>' : ''}</div>
     <div class="cf">
-      <input id="chatText" placeholder="ask about #${id}, or say what to do next"
-        onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();sendChat('dock')}">
-      <button class="pri" onclick="sendChat('dock')" ${th.busy ? 'disabled' : ''}>Send</button>
+      <div class="join w-full">
+        <input id="chatText" class="input input-sm input-bordered join-item flex-1"
+          placeholder="ask about #${id}…"
+          onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();sendChat('dock')}">
+        <button class="btn btn-primary btn-sm join-item" onclick="sendChat('dock')"
+          ${th.busy ? 'disabled' : ''}>Send</button>
+      </div>
     </div></div>`;
   const body = $('#chatBody');
   if (body) body.scrollTop = body.scrollHeight;
@@ -495,9 +609,13 @@ function renderChat() {
 function renderChatCard() {
   const el = $('#ovChat');
   if (!el) return;
+  const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 60;
   const k = el.scrollTop;
-  el.innerHTML = chatBubbles(S.task) + (thread(S.task).busy ? '<div class="bubble sys">thinking…</div>' : '');
-  el.scrollTop = el.scrollHeight || k;
+  el.innerHTML = chatBubbles(S.task) +
+    (thread(S.task).busy
+      ? '<div class="chat chat-start"><div class="chat-bubble"><span class="loading loading-dots loading-sm"></span></div></div>'
+      : '');
+  el.scrollTop = nearBottom ? el.scrollHeight : k;
 }
 
 async function sendChat(source) {
@@ -530,13 +648,13 @@ function modal(opts) {
       </label>`).join('');
     const body = opts.html || fields;
     host.innerHTML = `<div class="overlay" data-overlay>
-      <div class="modal card" role="dialog" aria-modal="true">
+      <div class="dlg card" role="dialog" aria-modal="true">
         <h2 style="margin:0 0 .3rem;font-size:var(--fs-15)">${esc(opts.title)}</h2>
         ${opts.message ? `<div class="muted" style="margin-bottom:.7rem">${opts.message}</div>` : ''}
         ${body}
         <div class="row" style="justify-content:flex-end;margin-top:1rem">
-          <button class="ghost" id="mCancel">${esc(opts.cancel || 'Cancel')}</button>
-          <button class="${opts.danger ? 'danger' : 'pri'}" id="mOk">${esc(opts.ok || 'Save')}</button>
+          <button class="btn btn-sm btn-ghost" id="mCancel">${esc(opts.cancel || 'Cancel')}</button>
+          <button class="btn btn-sm ${opts.danger ? 'btn-error' : 'btn-primary'}" id="mOk">${esc(opts.ok || 'Save')}</button>
         </div></div></div>`;
     const close = v => { host.innerHTML = ''; document.removeEventListener('keydown', key); resolve(v); };
     const submit = () => {
@@ -582,7 +700,7 @@ function toggleMenu() {
   const host = $('#menuHost');
   if (host.innerHTML) { host.innerHTML = ''; return; }
   const dense = document.documentElement.getAttribute('data-density') === 'compact';
-  host.innerHTML = `<div class="menu">
+  host.innerHTML = `<div class="popmenu">
     <button onclick="goGlobal('settings')">Settings</button>
     <button onclick="goGlobal('skills')">Skills</button>
     <div class="sep"></div>
@@ -593,7 +711,7 @@ function toggleMenu() {
   </div>`;
   setTimeout(() => document.addEventListener('click', closeMenuOnce, {once: true}), 0);
 }
-function closeMenuOnce(e) { if (!e.target.closest('.menu') && !e.target.closest('#gear')) $('#menuHost').innerHTML = ''; }
+function closeMenuOnce(e) { if (!e.target.closest('.popmenu') && !e.target.closest('#gear')) $('#menuHost').innerHTML = ''; }
 function toggleDensity() {
   const cur = document.documentElement.getAttribute('data-density');
   const next = cur === 'compact' ? 'comfortable' : 'compact';
@@ -641,8 +759,8 @@ document.addEventListener('keydown', e => {
 
 function drawTabs() {
   if (S.view !== 'task' || !S.data) return '';
-  return `<div class="tabs">${TABS.map(([k, label]) =>
-    `<button class="${S.tab === k ? 'on' : ''}" onclick="setTab('${k}')">${label}</button>`).join('')}</div>`;
+  return `<div class="tabs tabs-bordered">${TABS.map(([k, label]) =>
+    `<button class="tab ${S.tab === k ? 'tab-active' : ''}" onclick="setTab('${k}')">${label}</button>`).join('')}</div>`;
 }
 
 async function goGlobal(view) {
@@ -789,22 +907,23 @@ function render() {
         <div class="goal">${esc(d.task.goal)}</div>
       </div>
       <div class="actions">
-        <div class="seg" title="Autonomy for this engagement">
-          <button class="${(d.mode || 'autonomous') === 'autonomous' ? 'on' : ''}"
+        <div class="join" title="Autonomy for this engagement">
+          <button class="btn btn-sm join-item ${(d.mode || 'autonomous') === 'autonomous' ? 'btn-active btn-primary' : ''}"
             onclick="setMode('autonomous')">Autonomous</button>
-          <button class="${d.mode === 'approval' ? 'on' : ''}"
+          <button class="btn btn-sm join-item ${d.mode === 'approval' ? 'btn-active btn-primary' : ''}"
             onclick="setMode('approval')">Approval</button>
         </div>
         <span class="hint" style="margin-left:.2rem">workers</span>
-        <div class="stepper" title="Parallel workers — applies live">
-          <button onclick="bumpWorkers(-1)">−</button>
-          <input id="rWorkers" value="${d.workers || 2}" onchange="applyWorkers()">
-          <button onclick="bumpWorkers(1)">+</button>
+        <div class="join" title="Parallel workers — applies live">
+          <button class="btn btn-sm join-item" onclick="bumpWorkers(-1)">−</button>
+          <input id="rWorkers" class="input input-sm input-bordered join-item" style="width:3rem;text-align:center"
+            value="${d.workers || 2}" onchange="applyWorkers()">
+          <button class="btn btn-sm join-item" onclick="bumpWorkers(1)">+</button>
         </div>
-        <button class="pri" onclick="runTask()" ${d.running ? 'disabled' : ''}>${d.running ? 'Running…' : 'Start'}</button>
-        <button onclick="stopTask()" ${(d.running || d.approval) ? '' : 'disabled'}>Stop</button>
-        <button onclick="reportPreview()" title="Client-facing report">Report</button>
-        <button class="ghost" onclick="taskMenu(${d.task.id})" title="More">⋯</button>
+        <button class="btn btn-primary btn-sm" onclick="runTask()" ${d.running ? 'disabled' : ''}>${d.running ? 'Running…' : 'Start'}</button>
+        <button class="btn btn-sm" onclick="stopTask()" ${(d.running || d.approval) ? '' : 'disabled'}>Stop</button>
+        <button class="btn btn-sm btn-outline" onclick="reportPreview()" title="Client-facing report">Report</button>
+        <button class="btn btn-ghost btn-sm btn-circle" onclick="taskMenu(${d.task.id})" title="More">⋯</button>
       </div>
     </div>
     <div class="statline">
@@ -890,22 +1009,42 @@ function tabOverview(d) {
       ${ov.constraints.map(c => `<div><span class="chip">${esc(c.kind)}</span> ${esc(c.text)}</div>`).join('')
         || '<span class="muted">none stated</span>'}
     </div>
-    <div class="card" style="display:flex;flex-direction:column">
-      <div class="row" style="justify-content:space-between;margin-bottom:.4rem">
-        <h3 style="margin:0;font-size:var(--fs-15)">Planner</h3>
-        <span class="hint">top funnel — ask, or tell it what to do</span>
+    <div class="card" style="display:flex;flex-direction:column;padding:0;overflow:hidden">
+      <div class="row" style="justify-content:space-between;padding:.7rem .9rem .45rem">
+        <div class="row" style="gap:.55rem">
+          <div class="avatar placeholder">
+            <div class="w-7 rounded-full bg-primary text-primary-content"><span class="text-xs">P</span></div></div>
+          <div>
+            <div style="font-weight:600;font-size:var(--fs-15)">Planner</div>
+            <div class="hint" style="margin-top:-.15rem">top funnel · reads the live graph</div>
+          </div>
+        </div>
+        <span class="badge badge-sm badge-ghost">${(thread(d.task.id).msgs || []).length} msg</span>
       </div>
-      <div id="ovChat" class="chatmini">${chatBubbles(d.task.id)}</div>
-      <div class="cf" style="margin-top:.45rem">
-        <input id="ovChatText" placeholder="ask about progress, or say what to do next"
-          onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();sendChat('ov')}">
-        <button class="pri" onclick="sendChat('ov')">Send</button>
+      ${S.dockOpen ? `<div class="chatmini" style="padding:.6rem .9rem">
+        <div class="chat-empty"><div class="chat-empty-t">This thread is open in the dock</div>
+        <div class="chat-empty-s">The floating panel at the bottom right — it follows you across
+          tabs, so the conversation is not duplicated here.</div>
+        <button class="btn btn-xs btn-outline" onclick="toggleChat()">Bring it back inline</button>
+        </div></div>` : `<div id="ovChat" class="chatmini" style="padding:.2rem .9rem .3rem">${chatBubbles(d.task.id)}</div>`}
+      <div style="padding:.55rem .75rem;border-top:1px solid var(--line)">
+        ${S.dockOpen ? `<button class="btn btn-sm btn-ghost w-full" onclick="toggleChat()">
+          Open the dock to reply</button>` : `<div class="join w-full">
+          <input id="ovChatText" class="input input-sm input-bordered join-item flex-1"
+            placeholder="ask the planner…"
+            onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();sendChat('ov')}">
+          <button class="btn btn-primary btn-sm join-item" onclick="sendChat('ov')">Send</button>
+        </div>`}
       </div>
-      <div class="qstrip">
-        <div class="hint" style="margin:.5rem 0 .25rem;text-transform:uppercase;letter-spacing:.05em">
-          Queue · ${queue.filter(i => i.state === 'running').length} running ·
-          ${queue.filter(i => i.state !== 'running').length} open</div>
-        ${queue.map(intentRow).join('') || '<div class="muted">idle — nothing dispatched</div>'}
+      <details class="qwrap">
+        <summary>
+          Queue
+          <span class="badge badge-xs badge-ghost">${queue.filter(i => i.state === 'running').length} running</span>
+          <span class="badge badge-xs badge-ghost">${queue.filter(i => i.state !== 'running').length} open</span>
+        </summary>
+        <div class="qlist">${queue.map(intentRow).join('') || '<div class="muted">idle — nothing dispatched</div>'}</div>
+      </details>
+    </div>
       </div>
     </div>
   </div>
@@ -1997,7 +2136,7 @@ async function createTask() {
 /* ---------- actions ---------- */
 function taskMenu(id) {
   const host = $('#menuHost');
-  host.innerHTML = `<div class="menu">
+  host.innerHTML = `<div class="popmenu">
     <button onclick="renameTask()">Rename</button>
     <button onclick="reportPreview(); $('#menuHost').innerHTML=''">Report preview</button>
     <button onclick="exportMd(); $('#menuHost').innerHTML=''">Download markdown</button>

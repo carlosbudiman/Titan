@@ -288,7 +288,11 @@ immediately.
 titan serve            # http://127.0.0.1:9911
 ```
 
-One process, no build step, no JavaScript dependencies, no external assets.
+One process, no build step, no JavaScript dependencies, no external assets. The
+component layer is [daisyUI](https://daisyui.com) 4 (vendored into
+`titan/assets/daisyui.css`, served gzipped at `/static/daisyui.css`) with the theme
+tokens remapped to the burgundy palette, so buttons, inputs, tabs, badges, dialogs and
+the chat follow one system in both themes.
 
 | View | What it does |
 |---|---|
